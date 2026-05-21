@@ -1,3 +1,1 @@
-{
-    "python-envs.defaultEnvManager": "ms-python.python:system"
-}
+{ "python-envs.defaultEnvManager": "ms-python.python:system", "editor.defaultFormatter": "ms-python.autopep8", "[python]": { "editor.defaultFormatter": "ms-python.black-formatter", "editor.formatOnSave": true } }
