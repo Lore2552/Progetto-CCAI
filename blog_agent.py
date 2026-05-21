@@ -401,12 +401,10 @@ def human_review(state: AgentState) -> dict:
     return result
 
 
-def kg_updater(state: AgentState) -> dict:
-    print("-> Esecuzione KG Updater & Web Publisher...")
-    topic = state["current_topic"]
-    sources = state.get("verified_resources", [])
-    draft = state["draft"]
-    snippet = state["draft"][:100]
+@tool
+def aggiorna_knowledge_graph_db(topic: str, draft: str, source_urls: List[str]) -> str:
+    """Aggiorna il Knowledge Graph in Neo4j creando nodi per il topic, post, claims e fonti."""
+    snippet = draft[:100]
 
     prompt_claims = (
         f"Analizza questo testo: '{draft}'.\n"
@@ -417,7 +415,7 @@ def kg_updater(state: AgentState) -> dict:
         claims_response = llm.invoke([HumanMessage(content=prompt_claims)]).content
         claims = [c.strip() for c in claims_response.split("|") if c.strip()]
     except:
-        claims = ["Informazione sportiva non specificata."]
+        claims = ["Informazione culinaria non specificata."]
 
     count_res = graph_db.query("MATCH (p:Post) RETURN count(p) AS totale")
     post_count = count_res[0]["totale"] if count_res else 0
@@ -447,8 +445,7 @@ def kg_updater(state: AgentState) -> dict:
         """
         graph_db.query(cypher_claim, params={"post_id": post_id, "claim": claim})
 
-    for idx, res in enumerate(sources):
-        url = res.get("url", f"fonte_sconosciuta_{idx}")
+    for url in source_urls:
         cypher_source = """
         MATCH (p:Post {id: $post_id})
         MERGE (s:Source {url: $url})
@@ -456,7 +453,55 @@ def kg_updater(state: AgentState) -> dict:
         """
         graph_db.query(cypher_source, params={"post_id": post_id, "url": url})
 
-    print(f"   [KG] Database Neo4j aggiornato con successo!")
+    return "Database Neo4j aggiornato con successo!"
+
+
+def kg_updater(state: AgentState) -> dict:
+    print("-> Esecuzione KG Updater & Web Publisher (tramite ReAct)...")
+    topic = state["current_topic"]
+    sources = state.get("verified_resources", [])
+    draft = state["draft"]
+    trace = state.get("reasoning_trace", [])
+
+    source_urls = [
+        res.get("url", f"fonte_sconosciuta_{idx}") for idx, res in enumerate(sources)
+    ]
+
+    tools = [aggiorna_knowledge_graph_db]
+    db_agent = create_react_agent(llm, tools)
+
+    prompt = f"""Devi aggiornare il nostro database basato su grafi Neo4j con le informazioni dell'ultimo articolo scritto.
+    
+    Questi sono i dati che DEVI passare al tool:
+    - topic: "{topic}"
+    - draft: "{draft}"
+    - source_urls: {source_urls}
+    
+    SPIEGA il tuo ragionamento iniziando con 'Thought: [la tua giustificazione]', poi chiama il tool 'aggiorna_knowledge_graph_db' passandogli in input ESATTAMENTE i tre parametri forniti sopra, dopodichè fermati.
+    """
+
+    print("   [KG ReAct] Avvio l'agente per l'inserimento su db...")
+    try:
+        response = db_agent.invoke({"messages": [HumanMessage(content=prompt)]})
+        print("   [KG ReAct] Aggiornamento DB concluso dall'agente!")
+
+        if response:
+            messages = response.get("messages", [])
+            for msg in messages:
+                if (
+                    getattr(msg, "type", "") == "ai"
+                    and hasattr(msg, "tool_calls")
+                    and msg.tool_calls
+                ):
+                    if msg.content:
+                        trace.append(f"Thought: {msg.content.strip()}")
+                    for tool_call in msg.tool_calls:
+                        trace.append(f"Action: Chiamo tool '{tool_call['name']}'...")
+                elif getattr(msg, "type", "") == "tool":
+                    trace.append(f"Observation: {msg.content}")
+
+    except Exception as e:
+        print(f"   [KG ReAct] Errore nell'esecuzione dell'agente Neo4j: {e}")
 
     html_path = "index.html"
     if os.path.exists(html_path):
