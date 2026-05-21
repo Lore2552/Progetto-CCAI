@@ -2,76 +2,65 @@
 <graphml xmlns="http://graphml.graphdrawing.org/xmlns" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd"><key id="d2" for="edge" attr.name="relation" attr.type="string"/>
 <key id="d1" for="node" attr.name="snippet" attr.type="string"/>
 <key id="d0" for="node" attr.name="type" attr.type="string"/>
-<graph edgedefault="directed"><node id="Il ritorno di Kylian Mbappé in Francia">
+<graph edgedefault="directed"><node id="Pollo alla Cacciatora">
   <data key="d0">Topic</data>
 </node>
 <node id="Post_1">
   <data key="d0">Post</data>
-  <data key="d1">**Il ritorno di Kylian Mbappé in Francia, il giocatore più importante del mondo torna a casa**
+  <data key="d1">**Pollo alla Cacciatora: un Classico della Tradizione Italiana**
 
-Kyli</data>
+Il Pollo alla Cacciatora è un piat</data>
 </node>
 <node id="Search Output">
   <data key="d0">Source</data>
 </node>
-<node id="Il record di gol segnati in una stagione da Lionel Messi; L'inaspettato ritiro del campione olimpico di nuoto Caeleb Dressel.">
+<node id="Tortellini in Brodo / Lasagna Verde">
   <data key="d0">Topic</data>
 </node>
 <node id="Post_2">
   <data key="d0">Post</data>
-  <data key="d1">**TITOLO: "La sorpresa del mondo sportivo: Caeleb Dressel si ritira dal nuoto!"**
+  <data key="d1">**TITOLO: "La Tradizione al Palato: I Tortellini in Brodo con un Giro di Fantasia"**
 
-Sono state in ago</data>
+Sono arrivati </data>
 </node>
-<node id=" Doppio colpo per il mondo dello sport: Đoković trionfa a Wimbledon e il Manchester United cambia allenatore">
+<node id="La Ricetta Segreta del Pollo alla Cacciatora: un Classico Italiano da Non Dimenticare">
   <data key="d0">Topic</data>
 </node>
 <node id="Post_3">
   <data key="d0">Post</data>
-  <data key="d1">Ieri sera è stata una notte di grande emozione per gli appassionati di tennis e calcio. Mentre Novak</data>
+  <data key="d1">Il pollo alla cacciatora è un piatto della tradizione italiana che racchiude in sé tutto il calore e</data>
 </node>
-<node id=" Novak Đoković Sembra Impossibile: Vincitore per la Quinta Volta al Campionato di Wimbledon">
+<node id="Spaghetti alla Carbonara / Fettuccine al Tartufo">
   <data key="d0">Topic</data>
 </node>
 <node id="Post_4">
   <data key="d0">Post</data>
-  <data key="d1">La storia si è ripetuta ieri sera al campionato di Wimbledon, dove il serbo Novak Đoković ha conquis</data>
+  <data key="d1">**La Ricetta Segreta dei Sapori: Spaghetti alla Carbonara con Tartufo Bianco**
+
+Ecco la ricetta che </data>
 </node>
-<node id="Il trionfo di Novak Đoković al US Open 2025: il murciano si riporta in voga con la finale degli Stati Uniti">
-  <data key="d0">Topic</data>
-</node>
-<node id="Post_5">
-  <data key="d0">Post</data>
-  <data key="d1">Ieri sera, all'interno dell'US Open 2025, è stata disputata una delle finali più emozionanti della s</data>
-</node>
-<edge source="Post_1" target="Il ritorno di Kylian Mbappé in Francia">
+<edge source="Post_1" target="Pollo alla Cacciatora">
   <data key="d2">COVERS_TOPIC</data>
 </edge>
 <edge source="Post_1" target="Search Output">
   <data key="d2">USES_SOURCE</data>
 </edge>
-<edge source="Post_2" target="Il record di gol segnati in una stagione da Lionel Messi; L'inaspettato ritiro del campione olimpico di nuoto Caeleb Dressel.">
+<edge source="Post_2" target="Tortellini in Brodo / Lasagna Verde">
   <data key="d2">COVERS_TOPIC</data>
 </edge>
 <edge source="Post_2" target="Search Output">
   <data key="d2">USES_SOURCE</data>
 </edge>
-<edge source="Post_3" target=" Doppio colpo per il mondo dello sport: Đoković trionfa a Wimbledon e il Manchester United cambia allenatore">
+<edge source="Post_3" target="La Ricetta Segreta del Pollo alla Cacciatora: un Classico Italiano da Non Dimenticare">
   <data key="d2">COVERS_TOPIC</data>
 </edge>
 <edge source="Post_3" target="Search Output">
   <data key="d2">USES_SOURCE</data>
 </edge>
-<edge source="Post_4" target=" Novak Đoković Sembra Impossibile: Vincitore per la Quinta Volta al Campionato di Wimbledon">
+<edge source="Post_4" target="Spaghetti alla Carbonara / Fettuccine al Tartufo">
   <data key="d2">COVERS_TOPIC</data>
 </edge>
 <edge source="Post_4" target="Search Output">
-  <data key="d2">USES_SOURCE</data>
-</edge>
-<edge source="Post_5" target="Il trionfo di Novak Đoković al US Open 2025: il murciano si riporta in voga con la finale degli Stati Uniti">
-  <data key="d2">COVERS_TOPIC</data>
-</edge>
-<edge source="Post_5" target="Search Output">
   <data key="d2">USES_SOURCE</data>
 </edge>
 </graph></graphml>
