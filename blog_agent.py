@@ -1,6 +1,8 @@
 import os
 import datetime
 import json
+from langchain_core.tools import tool
+from langgraph.prebuilt import create_react_agent
 from dotenv import load_dotenv
 from typing import TypedDict, List, Dict, Any, Literal
 from langgraph.graph import StateGraph, START, END
@@ -8,31 +10,23 @@ from langchain_groq import ChatGroq
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage
 from langchain_community.tools import DuckDuckGoSearchRun
-from IPython.display import Image, display, Markdown, HTML
-import networkx as nx
-from networkx.readwrite import json_graph
+from langchain_community.graphs import Neo4jGraph
 
 load_dotenv()
 
-# llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.1)
-llm = ChatOllama(model="llama3.1:8b", temperature=0.5)
+llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.1)
+#llm = ChatOllama(model="llama3.1:8b", temperature=0.5)
 
 ddg_search = DuckDuckGoSearchRun()
 
+graph_db = Neo4jGraph(
+    url=os.environ.get("NEO4J_URI"),
+    username=os.environ.get("NEO4J_USERNAME"),
+    password=os.environ.get("NEO4J_PASSWORD")
+)
+
 KG_FILE = "knowledge_graph.graphml"
 
-
-def load_kg() -> nx.DiGraph:
-    if os.path.exists(KG_FILE):
-        try:
-            return nx.read_graphml(KG_FILE)
-        except Exception:
-            return nx.DiGraph()
-    return nx.DiGraph()
-
-
-def save_kg(G: nx.DiGraph):
-    nx.write_graphml(G, KG_FILE)
 
 
 # ==========================================
@@ -58,19 +52,13 @@ class AgentState(TypedDict):
 # 2. DEFINIZIONE DEI NODI (AGENTI)
 # ==========================================
 
-
-from langchain_core.tools import tool
-from langchain.agents import create_agent
-
-
 def topic_planner(state: AgentState) -> dict:
     print("-> Esecuzione Topic Planner...")
 
-    G = load_kg()
+    cypher_query = "MATCH (t:Topic) RETURN t.name AS name"
+    risultati = graph_db.query(cypher_query)
 
-    past_topics = [
-        n for n, attributes in G.nodes(data=True) if attributes.get("type") == "Topic"
-    ]
+    past_topics = [res["name"] for res in risultati if res.get("name")]
     rejected_topics = state.get("rejected_topics", [])
 
     all_avoids = past_topics + rejected_topics
@@ -85,7 +73,7 @@ def topic_planner(state: AgentState) -> dict:
         f"DEVI scegliere ricette della cucina italiana COMPLETAMENTE DIVERSE.\n"
         f"DIVIETO ASSOLUTO: Non puoi proporre di nuovo piatti o ricette se sono già presenti nella lista dei vietati.\n"
         f"ATTENZIONE: Scegli UNA SOLA ricetta per argomento.\n"
-        f"Fornisci esattamente 2 nuove ricette interessanti separate da virgola. Rispondi SOLO con il nome delle ricette, nessun altro testo."
+        f"REQUISITO: Devi identificare i 'Gaps in coverage' (vuoti di copertura) Guardando gli argomenti che abbiamo già trattato, trova sotto-argomenti strettamente correlati ma che non abbiamo mai esplorato.\n"
     )
     try:
         response = llm.invoke([HumanMessage(content=prompt)]).content
@@ -127,13 +115,15 @@ def resource_researcher(state: AgentState) -> dict:
     print(f"-> Esecuzione Resource Researcher (con paradigma ReAct) per: {topic}")
 
     tools = [cerca_sul_web]
-    react_agent = create_agent(llm, tools)
+    react_agent = create_react_agent(llm, tools)
 
     prompt = f"""Devi raccogliere dati completi su come si prepara questa ricetta italiana: '{topic}'.
-    ATTENZIONE: Assicurati di cercare notizie, preparazione, e ingredienti riguardanti UNA SOLA RICETTA (quella specificata in '{topic}'). Evita articoli generici che parlano di tante ricette diverse.
-    REQUISITO FONDAMENTALE: Prima di usare il tool di ricerca, DEVI spiegare il tuo ragionamento e giustificare perché lo stai usando.
-    Scrivi il tuo ragionamento testuale iniziando con 'Thought: [la tua giustificazione]'.
-    Dopodiché, usa il tool 'cerca_sul_web'.
+    ATTENZIONE: Assicurati di cercare notizie, preparazione, e ingredienti riguardanti UNA SOLA RICETTA.
+    
+    REGOLE TASSATIVE:
+    1. Prima di usare il tool di ricerca, DEVI spiegare il tuo ragionamento iniziando ESATTAMENTE con 'Thought: [la tua giustificazione]'.
+    2. NON cercare all'infinito. Usa il tool 'cerca_sul_web' al massimo 1 o 2 volte per raccogliere gli ingredienti.
+    3. CONDIZIONE DI USCITA: Appena hai trovato gli ingredienti e i passaggi principali della ricetta, FERMATI IMMEDIATAMENTE. Non chiamare più il tool e scrivi un riassunto finale con i dati che hai trovato.
     """
 
     print(
@@ -190,12 +180,8 @@ def quality_fact_checker(state: AgentState) -> dict:
     topic = state["current_topic"]
     verified = []
 
-    G = load_kg()
-    past_topics = [
-        n
-        for n, attributes in G.nodes(data=True)
-        if attributes.get("type") in ["Topic", "Post"]
-    ]
+    risultati = graph_db.query("MATCH (t:Topic) RETURN t.name AS name")
+    past_topics = [res["name"] for res in risultati if res.get("name")]
 
     for res in raw:
         content = res.get("content", "")[:1500]
@@ -226,6 +212,9 @@ def drafter(state: AgentState) -> dict:
 
     print("-> Esecuzione Drafter (Generazione testo in corso)...")
 
+    claims_query = "MATCH (c:Claim) RETURN c.text AS claim LIMIT 5"
+    past_claims = [res["claim"] for res in graph_db.query(claims_query)]
+
     feedback = state.get("human_feedback", "")
     previous_draft = state.get("draft", "")
     sources = state.get("verified_resources", [])
@@ -236,11 +225,14 @@ def drafter(state: AgentState) -> dict:
     prompt = (
         f"Scrivi un breve e coinvolgente articolo di blog su come preparare la ricetta: '{topic}'.\n"
         f"Usa questi frammenti di ricerca come contesto primario:\n{sources_text}\n\n"
+        f"KNOWLEDGE GRAPH (AFFERMAZIONI PASSATE DEL BLOG): {past_claims}\n"
         f"REGOLE FONDAMENTALI (PENA IL RIFIUTO DELLO SCRITTO):\n"
         f"1. L'articolo deve parlare ESCLUSIVAMENTE di UNA SOLA RICETTA. Se i frammenti mescolano più ricette, SCEGLINE SOLO UNA (quella inerente a '{topic}') e IGNORA tutto il resto. Vieta categoricamente di mischiare preparazioni diverse.\n"
         f"2. Inizia la tua risposta ESATTAMENTE con 'TITOLO: <il tuo titolo accattivante>' sulla primissima riga.\n"
         f"3. L'articolo deve essere in italiano.\n"
-        f"4. Scrivi in modo diretto come se fossi uno chef (VIETATO usare scuse, premesse o frasi come 'ecco l'articolo')."
+        f"4. Assicurati che l'articolo sia COERENTE (consistency) con le affermazioni passate. Non contraddirle.\n"
+        f"5. Se pertinente, CONNETTI (connect with existing topics) il nuovo post a una di queste vecchie informazioni.\n"
+        f"6. Scrivi in modo diretto come se fossi uno chef (VIETATO usare scuse, premesse o frasi come 'ecco l'articolo')."
     )
 
     if feedback and previous_draft:
@@ -413,29 +405,56 @@ def kg_updater(state: AgentState) -> dict:
     print("-> Esecuzione KG Updater & Web Publisher...")
     topic = state["current_topic"]
     sources = state.get("verified_resources", [])
+    draft = state["draft"]
+    snippet = state["draft"][:100]
 
-    G = load_kg()
-
-    if not G.has_node(topic):
-        G.add_node(topic, type="Topic")
-
-    post_count = sum(1 for n, attr in G.nodes(data=True) if attr.get("type") == "Post")
+    prompt_claims = (
+        f"Analizza questo testo: '{draft}'.\n"
+        f"Estrai esattamente DUE fatti chiave o affermazioni importanti (Key Claims).\n"
+        f"Rispondi SOLO con i due claims separati dal carattere '|'."
+    )
+    try:
+        claims_response = llm.invoke([HumanMessage(content=prompt_claims)]).content
+        claims = [c.strip() for c in claims_response.split('|') if c.strip()]
+    except:
+        claims = ["Informazione sportiva non specificata."]
+    
+    count_res = graph_db.query("MATCH (p:Post) RETURN count(p) AS totale")
+    post_count = count_res[0]["totale"] if count_res else 0
     post_id = f"Post_{post_count + 1}"
 
-    G.add_node(post_id, type="Post", snippet=state["draft"][:100])
-    G.add_edge(post_id, topic, relation="COVERS_TOPIC")
+    cypher_post = """
+    MERGE (t:Topic {name: $topic})
+    CREATE (p:Post {id: $post_id, snippet: $snippet})
+    MERGE (p)-[:COVERS_TOPIC]->(t)
+    
+    // Connette questo topic con l'ultimo topic discusso per creare la rete
+    WITH t, p
+    MATCH (old:Topic) WHERE old.name <> $topic
+    WITH t, p, old ORDER BY old.name DESC LIMIT 1
+    MERGE (t)-[:RELATED_TO]->(old)
+    """
 
+    graph_db.query(cypher_post, params={"topic": topic, "post_id": post_id, "snippet": snippet})
+
+    for claim in claims:
+        cypher_claim = """
+        MATCH (p:Post {id: $post_id})
+        MERGE (c:Claim {text: $claim})
+        MERGE (p)-[:MAKES_CLAIM]->(c)
+        """
+        graph_db.query(cypher_claim, params={"post_id": post_id, "claim": claim})
+        
     for idx, res in enumerate(sources):
         url = res.get("url", f"fonte_sconosciuta_{idx}")
-        if not G.has_node(url):
-            G.add_node(url, type="Source")
-        G.add_edge(post_id, url, relation="USES_SOURCE")
+        cypher_source = """
+        MATCH (p:Post {id: $post_id})
+        MERGE (s:Source {url: $url})
+        MERGE (p)-[:USES_SOURCE]->(s)
+        """
+        graph_db.query(cypher_source, params={"post_id": post_id, "url": url})
 
-    print(
-        f"   [KG] Rete aggiornata! Nodi totali: {G.number_of_nodes()}, Archi totali: {G.number_of_edges()}"
-    )
-
-    save_kg(G)
+    print(f"   [KG] Database Neo4j aggiornato con successo!")
 
     html_path = "index.html"
     if os.path.exists(html_path):
@@ -464,7 +483,7 @@ def kg_updater(state: AgentState) -> dict:
             f.write(html_content)
         print("   [Web Publisher] Post aggiunto al file index.html!")
 
-    return {"status": "kg_updated", "kg_context": G}
+    return {"status": "kg_updated", "kg_context": "Neo4j_Active"}
 
 
 # ==========================================
@@ -525,7 +544,6 @@ app = workflow.compile()
 print("=== GENERAZIONE DEL GRAFO IN CORSO ===")
 try:
     img = app.get_graph().draw_mermaid_png()
-    display(Image(img))
     with open("graph.png", "wb") as f:
         f.write(img)
 except Exception as e:
@@ -537,11 +555,9 @@ print("======================================\n")
 # ==========================================
 print("=== INIZIO PROCESSO LANGGRAPH ===")
 
-persisted_kg = load_kg()
-
 initial_state = {
     "user_request": "Scrivi un blog post con la preparazione completa e dettagliata di una famosa ricetta della cucina tradizionale italiana. Voglio imparare ricette autentiche e classiche. Includi solo UNA ricetta per post.",
-    "kg_context": persisted_kg,
+    "kg_context": None,
     "planned_topics": [],
     "current_topic": "",
     "raw_resources": [],
@@ -551,6 +567,7 @@ initial_state = {
     "status": "start",
     "revision_count": 0,
     "rejected_topics": [],
+    "reasoning_trace": []
 }
 
 for output in app.stream(initial_state):
