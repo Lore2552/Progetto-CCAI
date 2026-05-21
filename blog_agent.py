@@ -14,19 +14,18 @@ from langchain_community.graphs import Neo4jGraph
 
 load_dotenv()
 
-llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.1)
-#llm = ChatOllama(model="llama3.1:8b", temperature=0.5)
+# llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.1)
+llm = ChatOllama(model="llama3.1:8b", temperature=0.5)
 
 ddg_search = DuckDuckGoSearchRun()
 
 graph_db = Neo4jGraph(
     url=os.environ.get("NEO4J_URI"),
     username=os.environ.get("NEO4J_USERNAME"),
-    password=os.environ.get("NEO4J_PASSWORD")
+    password=os.environ.get("NEO4J_PASSWORD"),
 )
 
 KG_FILE = "knowledge_graph.graphml"
-
 
 
 # ==========================================
@@ -51,6 +50,7 @@ class AgentState(TypedDict):
 
 # 2. DEFINIZIONE DEI NODI (AGENTI)
 # ==========================================
+
 
 def topic_planner(state: AgentState) -> dict:
     print("-> Esecuzione Topic Planner...")
@@ -223,7 +223,7 @@ def drafter(state: AgentState) -> dict:
     sources_text = "\n".join([s.get("content", "")[:1000] for s in sources])
 
     prompt = (
-        f"Scrivi un breve e coinvolgente articolo di blog su come preparare la ricetta: '{topic}'.\n"
+        f"Scrivi un coinvolgente articolo di blog su come preparare la ricetta: '{topic}'.\n"
         f"Usa questi frammenti di ricerca come contesto primario:\n{sources_text}\n\n"
         f"KNOWLEDGE GRAPH (AFFERMAZIONI PASSATE DEL BLOG): {past_claims}\n"
         f"REGOLE FONDAMENTALI (PENA IL RIFIUTO DELLO SCRITTO):\n"
@@ -415,10 +415,10 @@ def kg_updater(state: AgentState) -> dict:
     )
     try:
         claims_response = llm.invoke([HumanMessage(content=prompt_claims)]).content
-        claims = [c.strip() for c in claims_response.split('|') if c.strip()]
+        claims = [c.strip() for c in claims_response.split("|") if c.strip()]
     except:
         claims = ["Informazione sportiva non specificata."]
-    
+
     count_res = graph_db.query("MATCH (p:Post) RETURN count(p) AS totale")
     post_count = count_res[0]["totale"] if count_res else 0
     post_id = f"Post_{post_count + 1}"
@@ -435,7 +435,9 @@ def kg_updater(state: AgentState) -> dict:
     MERGE (t)-[:RELATED_TO]->(old)
     """
 
-    graph_db.query(cypher_post, params={"topic": topic, "post_id": post_id, "snippet": snippet})
+    graph_db.query(
+        cypher_post, params={"topic": topic, "post_id": post_id, "snippet": snippet}
+    )
 
     for claim in claims:
         cypher_claim = """
@@ -444,7 +446,7 @@ def kg_updater(state: AgentState) -> dict:
         MERGE (p)-[:MAKES_CLAIM]->(c)
         """
         graph_db.query(cypher_claim, params={"post_id": post_id, "claim": claim})
-        
+
     for idx, res in enumerate(sources):
         url = res.get("url", f"fonte_sconosciuta_{idx}")
         cypher_source = """
@@ -567,7 +569,7 @@ initial_state = {
     "status": "start",
     "revision_count": 0,
     "rejected_topics": [],
-    "reasoning_trace": []
+    "reasoning_trace": [],
 }
 
 for output in app.stream(initial_state):
