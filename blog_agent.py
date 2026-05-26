@@ -1,6 +1,7 @@
 import os
 import datetime
 import json
+import chromadb
 from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
 from dotenv import load_dotenv
@@ -24,6 +25,9 @@ graph_db = Neo4jGraph(
     username=os.environ.get("NEO4J_USERNAME"),
     password=os.environ.get("NEO4J_PASSWORD"),
 )
+
+chroma_client = chromadb.PersistentClient(path="./chroma_db")
+chroma_collection = chroma_client.get_or_create_collection(name="archivio_ricette")
 
 KG_FILE = "knowledge_graph.graphml"
 
@@ -50,6 +54,16 @@ class AgentState(TypedDict):
 
 # 2. DEFINIZIONE DEI NODI (AGENTI)
 # ==========================================
+
+
+@tool
+def cerca_nei_documenti_locali(query: str) -> str:
+    """Cerca nel database vettoriale locale informazioni storiche su ricette passate."""
+    print(f"      [RAG Tool] Ricerca in ChromaDB per: '{query}'...")
+    risultati = chroma_collection.query(query_texts=[query], n_results=1)
+    if risultati and risultati['documents'] and risultati['documents'][0]:
+        return f"Documento locale trovato: {risultati['documents'][0][0]}"
+    return "Nessun documento locale trovato. Cerca sul web."
 
 
 def topic_planner(state: AgentState) -> dict:
@@ -114,7 +128,7 @@ def resource_researcher(state: AgentState) -> dict:
 
     print(f"-> Esecuzione Resource Researcher (con paradigma ReAct) per: {topic}")
 
-    tools = [cerca_sul_web]
+    tools = [cerca_sul_web, cerca_nei_documenti_locali]
     react_agent = create_react_agent(llm, tools)
 
     prompt = f"""Devi raccogliere dati completi su come si prepara questa ricetta italiana: '{topic}'.
@@ -403,19 +417,33 @@ def human_review(state: AgentState) -> dict:
 
 @tool
 def aggiorna_knowledge_graph_db(topic: str, draft: str, source_urls: List[str]) -> str:
-    """Aggiorna il Knowledge Graph in Neo4j creando nodi per il topic, post, claims e fonti."""
+    """Aggiorna il K-RAG: Inserisce i vettori in ChromaDB e le triple nel Knowledge Graph Neo4j."""
+
+    count_res = graph_db.query("MATCH (p:Post) RETURN count(p) AS totale")
+    post_count = count_res[0]["totale"] if count_res else 0
+    post_id = f"Post_{post_count + 1}"
+
+    chroma_collection.add(
+        documents=[draft], 
+        metadatas=[{"topic": topic}], 
+        ids=[post_id]
+    )
+    print(f"   [ChromaDB] Vettori indicizzati per: {topic}")
+
     snippet = draft[:100]
 
-    prompt_claims = (
-        f"Analizza questo testo: '{draft}'.\n"
-        f"Estrai esattamente DUE fatti chiave o affermazioni importanti (Key Claims).\n"
-        f"Rispondi SOLO con i due claims separati dal carattere '|'."
+    prompt_triple = (
+        f"Analizza questo testo culinario: '{draft}'.\n"
+        f"Estrai esattamente 3 relazioni fondamentali in formato tripla.\n"
+        f"Usa ESATTAMENTE il formato: Soggetto | RELAZIONE_IN_MAIUSCOLO | Oggetto\n"
+        f"Esempio: Ragù alla Bolognese | RICHIEDE | Carne macinata\n"
+        f"Rispondi SOLO con le 3 triple, una per riga."
     )
     try:
-        claims_response = llm.invoke([HumanMessage(content=prompt_claims)]).content
-        claims = [c.strip() for c in claims_response.split("|") if c.strip()]
+        claims_response = llm.invoke([HumanMessage(content=prompt_triple)]).content
+        triple = [c.strip() for c in claims_response.split('\n') if '|' in c]
     except:
-        claims = ["Informazione culinaria non specificata."]
+        triple = []
 
     count_res = graph_db.query("MATCH (p:Post) RETURN count(p) AS totale")
     post_count = count_res[0]["totale"] if count_res else 0
@@ -425,8 +453,6 @@ def aggiorna_knowledge_graph_db(topic: str, draft: str, source_urls: List[str]) 
     MERGE (t:Topic {name: $topic})
     CREATE (p:Post {id: $post_id, snippet: $snippet})
     MERGE (p)-[:COVERS_TOPIC]->(t)
-    
-    // Connette questo topic con l'ultimo topic discusso per creare la rete
     WITH t, p
     MATCH (old:Topic) WHERE old.name <> $topic
     WITH t, p, old ORDER BY old.name DESC LIMIT 1
@@ -437,13 +463,21 @@ def aggiorna_knowledge_graph_db(topic: str, draft: str, source_urls: List[str]) 
         cypher_post, params={"topic": topic, "post_id": post_id, "snippet": snippet}
     )
 
-    for claim in claims:
-        cypher_claim = """
-        MATCH (p:Post {id: $post_id})
-        MERGE (c:Claim {text: $claim})
-        MERGE (p)-[:MAKES_CLAIM]->(c)
-        """
-        graph_db.query(cypher_claim, params={"post_id": post_id, "claim": claim})
+    for tripla in triple:
+        try:
+            sog, rel, obj = [item.strip() for item in tripla.split('|')]
+            rel_clean = rel.replace(" ", "_").upper()
+            
+            cypher_triple = f"""
+            MATCH (p:Post {{id: $post_id}})
+            MERGE (s:Entity {{name: $sog}})
+            MERGE (o:Entity {{name: $obj}})
+            MERGE (s)-[:{rel_clean}]->(o)
+            MERGE (p)-[:MENTIONS]->(s)
+            """
+            graph_db.query(cypher_triple, params={"post_id": post_id, "sog": sog, "obj": obj})
+        except Exception as e:
+            continue
 
     for url in source_urls:
         cypher_source = """
@@ -453,7 +487,7 @@ def aggiorna_knowledge_graph_db(topic: str, draft: str, source_urls: List[str]) 
         """
         graph_db.query(cypher_source, params={"post_id": post_id, "url": url})
 
-    return "Database Neo4j aggiornato con successo!"
+    return "Database Ibrido K-RAG aggiornato con successo!"
 
 
 def kg_updater(state: AgentState) -> dict:
