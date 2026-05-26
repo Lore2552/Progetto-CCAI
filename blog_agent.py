@@ -61,7 +61,7 @@ def cerca_nei_documenti_locali(query: str) -> str:
     """Cerca nel database vettoriale locale informazioni storiche su ricette passate."""
     print(f"      [RAG Tool] Ricerca in ChromaDB per: '{query}'...")
     risultati = chroma_collection.query(query_texts=[query], n_results=1)
-    if risultati and risultati['documents'] and risultati['documents'][0]:
+    if risultati and risultati["documents"] and risultati["documents"][0]:
         return f"Documento locale trovato: {risultati['documents'][0][0]}"
     return "Nessun documento locale trovato. Cerca sul web."
 
@@ -424,9 +424,7 @@ def aggiorna_knowledge_graph_db(topic: str, draft: str, source_urls: List[str]) 
     post_id = f"Post_{post_count + 1}"
 
     chroma_collection.add(
-        documents=[draft], 
-        metadatas=[{"topic": topic}], 
-        ids=[post_id]
+        documents=[draft], metadatas=[{"topic": topic}], ids=[post_id]
     )
     print(f"   [ChromaDB] Vettori indicizzati per: {topic}")
 
@@ -441,7 +439,7 @@ def aggiorna_knowledge_graph_db(topic: str, draft: str, source_urls: List[str]) 
     )
     try:
         claims_response = llm.invoke([HumanMessage(content=prompt_triple)]).content
-        triple = [c.strip() for c in claims_response.split('\n') if '|' in c]
+        triple = [c.strip() for c in claims_response.split("\n") if "|" in c]
     except:
         triple = []
 
@@ -465,9 +463,9 @@ def aggiorna_knowledge_graph_db(topic: str, draft: str, source_urls: List[str]) 
 
     for tripla in triple:
         try:
-            sog, rel, obj = [item.strip() for item in tripla.split('|')]
+            sog, rel, obj = [item.strip() for item in tripla.split("|")]
             rel_clean = rel.replace(" ", "_").upper()
-            
+
             cypher_triple = f"""
             MATCH (p:Post {{id: $post_id}})
             MERGE (s:Entity {{name: $sog}})
@@ -475,7 +473,9 @@ def aggiorna_knowledge_graph_db(topic: str, draft: str, source_urls: List[str]) 
             MERGE (s)-[:{rel_clean}]->(o)
             MERGE (p)-[:MENTIONS]->(s)
             """
-            graph_db.query(cypher_triple, params={"post_id": post_id, "sog": sog, "obj": obj})
+            graph_db.query(
+                cypher_triple, params={"post_id": post_id, "sog": sog, "obj": obj}
+            )
         except Exception as e:
             continue
 
@@ -547,14 +547,14 @@ def kg_updater(state: AgentState) -> dict:
 
         new_post_html = f"""
         <article class="post-card">
-            <h2 class="post-title">{topic}</h2>
+            <h2 class="post-title">👨‍🍳 {topic}</h2>
             <div class="post-meta">Pubblicato il {date_str}</div>
             <div class="post-content">
                 {formatted_draft}
             </div>
             <div class="post-tags">
-                <span class="tag">AI Generated</span>
-                <span class="tag">Cucina Italiana</span>
+                <span class="tag">🤖 AI Generated</span>
+                <span class="tag">🍝 Cucina Italiana</span>
             </div>
         </article>
         <!-- NEW_POSTS_HERE -->"""
