@@ -15,8 +15,8 @@ from langchain_community.graphs import Neo4jGraph
 
 load_dotenv()
 
-# llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.1)
-llm = ChatOllama(model="llama3.1:8b", temperature=0.5)
+llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.1)
+#llm = ChatOllama(model="llama3.1:8b", temperature=0.5)
 
 ddg_search = DuckDuckGoSearchRun()
 
@@ -61,8 +61,19 @@ def cerca_nei_documenti_locali(query: str) -> str:
     """Cerca nel database vettoriale locale informazioni storiche su ricette passate."""
     print(f"      [RAG Tool] Ricerca in ChromaDB per: '{query}'...")
     risultati = chroma_collection.query(query_texts=[query], n_results=1)
-    if risultati and risultati['documents'] and risultati['documents'][0]:
-        return f"Documento locale trovato: {risultati['documents'][0][0]}"
+    if risultati and risultati.get('documents') and risultati['documents'][0]:
+        documento = risultati['documents'][0][0]
+
+        distanza = risultati['distances'][0][0] if 'distances' in risultati else 0
+        print(f"      [RAG Tool] Distanza semantica rilevata: {distanza:.4f}")
+        
+        if distanza < 1.5:
+            print("      [RAG Tool] Documento pertinente! Lo passo all'agente.")
+            return f"Documento locale trovato: {documento}"
+        else:
+            print("      [RAG Tool] Documento trovato ma TROPPO DISTANTE (Low Confidence). Lo scarto.")
+            return "Trovato documento ma non pertinente. Cerca sul web."
+            
     return "Nessun documento locale trovato. Cerca sul web."
 
 
@@ -487,6 +498,8 @@ def aggiorna_knowledge_graph_db(topic: str, draft: str, source_urls: List[str]) 
         """
         graph_db.query(cypher_source, params={"post_id": post_id, "url": url})
 
+        print(f"   [Neo4j] Tripla inserita: ({sog}) -[{rel_clean}]-> ({obj})")
+
     return "Database Ibrido K-RAG aggiornato con successo!"
 
 
@@ -554,10 +567,11 @@ def kg_updater(state: AgentState) -> dict:
             </div>
             <div class="post-tags">
                 <span class="tag">AI Generated</span>
-                <span class="tag">Cucina Italiana</span>
+                
+                <span class="tag">K-RAG Verified</span> 
             </div>
         </article>
-        <!-- NEW_POSTS_HERE -->"""
+        """
 
         html_content = html_content.replace("<!-- NEW_POSTS_HERE -->", new_post_html)
         with open(html_path, "w", encoding="utf-8") as f:
