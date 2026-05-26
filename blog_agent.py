@@ -148,11 +148,11 @@ def resource_researcher(state: AgentState) -> dict:
     ATTENZIONE: Assicurati di cercare notizie, preparazione, e ingredienti riguardanti UNA SOLA RICETTA.
     
     REGOLE TASSATIVE:
-    1. Prima di usare il tool di ricerca, DEVI spiegare il tuo ragionamento iniziando ESATTAMENTE con 'Thought: [la tua giustificazione]'.
-    2. NON cercare all'infinito. Usa il tool 'cerca_sul_web' al massimo 1 o 2 volte per raccogliere gli ingredienti.
-    3. CONDIZIONE DI USCITA: Appena hai trovato gli ingredienti e i passaggi principali della ricetta, FERMATI IMMEDIATAMENTE. Non chiamare più il tool e scrivi un riassunto finale con i dati che hai trovato.
+    1. REASONING: Prima di usare qualsiasi tool, DEVI spiegare il tuo ragionamento iniziando ESATTAMENTE con 'Thought: [la tua giustificazione]'.
+    2. PRIORITÀ DI RICERCA (KRAG): Usa PRIMA il tool 'cerca_nei_documenti_locali' per trovare se il topic è pertinente con un documento presente nel database.
+    3. FALLBACK: Solo se 'cerca_nei_documenti_locali' non restituisce risultati sufficienti per completare la ricetta, puoi usare il tool 'cerca_sul_web' (massimo 1 o 2 volte).
+    4. CONDIZIONE DI USCITA: Appena hai trovato gli ingredienti e i passaggi principali, FERMATI IMMEDIATAMENTE. Non chiamare più tool e scrivi un riassunto finale con i dati che hai trovato.
     """
-
     print(
         "   [ReAct] Avvio l'agente. Attendi l'elaborazione (potrebbe richiedere un minuto in locale)..."
     )
