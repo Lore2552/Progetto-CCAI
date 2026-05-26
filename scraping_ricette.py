@@ -134,6 +134,21 @@ def get_existing_recipe_ids():
         return set(chroma_collection.get().get("ids", []))
     except Exception:
         return set()
+
+
+def get_existing_recipe_urls():
+    """Legge gli URL gia presenti nei metadati per deduplicare anche tra ID storici diversi."""
+    urls = set()
+    try:
+        metadatas = chroma_collection.get().get("metadatas", [])
+        for meta in metadatas:
+            if isinstance(meta, dict):
+                url = meta.get("url")
+                if isinstance(url, str) and url.strip():
+                    urls.add(url.strip())
+    except Exception:
+        pass
+    return urls
     return list(links)
 
 
@@ -221,14 +236,16 @@ def main():
     print(f"[INFO] Trovati {len(ricette_links)} link di ricette.")
 
     existing_ids = get_existing_recipe_ids()
+    existing_urls = get_existing_recipe_urls()
     print(f"[INFO] ID gia presenti in collection: {len(existing_ids)}")
+    print(f"[INFO] URL gia presenti in collection: {len(existing_urls)}")
 
     ricette = []
     for idx, link in enumerate(ricette_links):
         try:
             ricetta_id = f"ricetta_{hashlib.md5(link.encode('utf-8')).hexdigest()[:12]}"
 
-            if ricetta_id in existing_ids:
+            if ricetta_id in existing_ids or link in existing_urls:
                 print(f"[SKIP] Gia presente nel DB: {link}")
                 continue
 
@@ -244,6 +261,7 @@ def main():
                     ids=[ricetta_id],
                 )
                 existing_ids.add(ricetta_id)
+                existing_urls.add(link)
                 print(f"[OK] Salvata: {ricetta['titolo']}")
             else:
                 print(f"[WARN] Ricetta incompleta: {link}")
