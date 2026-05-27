@@ -1,0 +1,9 @@
+chromadb
+python-dotenv
+langchain-core
+langgraph
+langchain-groq
+langchain-ollama
+langchain-community
+duckduckgo-search
+neo4j
