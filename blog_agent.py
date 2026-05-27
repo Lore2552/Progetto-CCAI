@@ -489,6 +489,8 @@ def aggiorna_knowledge_graph_db(topic: str, draft: str, source_urls: List[str]) 
             graph_db.query(
                 cypher_triple, params={"post_id": post_id, "sog": sog, "obj": obj}
             )
+
+            print(f"   [Neo4j] Tripla inserita: ({sog}) -[{rel_clean}]-> ({obj})")
         except Exception as e:
             continue
 
@@ -499,9 +501,7 @@ def aggiorna_knowledge_graph_db(topic: str, draft: str, source_urls: List[str]) 
         MERGE (p)-[:USES_SOURCE]->(s)
         """
         graph_db.query(cypher_source, params={"post_id": post_id, "url": url})
-
-        print(f"   [Neo4j] Tripla inserita: ({sog}) -[{rel_clean}]-> ({obj})")
-
+        
     return "Database Ibrido K-RAG aggiornato con successo!"
 
 
