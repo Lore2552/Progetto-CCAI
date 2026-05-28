@@ -1,9 +1,8 @@
 import os
-import datetime
 import json
 import chromadb
 from langchain_core.tools import tool
-from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
 from dotenv import load_dotenv
 from typing import TypedDict, List, Dict, Any, Literal
 from langgraph.graph import StateGraph, START, END
@@ -11,7 +10,8 @@ from langchain_groq import ChatGroq
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage
 from langchain_community.tools import DuckDuckGoSearchRun
-from langchain_community.graphs import Neo4jGraph
+from langchain_neo4j import Neo4jGraph
+import datetime
 
 load_dotenv()
 
@@ -142,7 +142,7 @@ def resource_researcher(state: AgentState) -> dict:
     print(f"-> Esecuzione Resource Researcher (con paradigma ReAct) per: {topic}")
 
     tools = [cerca_sul_web, cerca_nei_documenti_locali]
-    react_agent = create_react_agent(llm, tools)
+    react_agent = create_agent(llm, tools)
 
     prompt = f"""Devi raccogliere dati completi su come si prepara questa ricetta italiana: '{topic}'.
     ATTENZIONE: Assicurati di cercare notizie, preparazione, e ingredienti riguardanti UNA SOLA RICETTA.
@@ -501,7 +501,7 @@ def aggiorna_knowledge_graph_db(topic: str, draft: str, source_urls: List[str]) 
         MERGE (p)-[:USES_SOURCE]->(s)
         """
         graph_db.query(cypher_source, params={"post_id": post_id, "url": url})
-        
+
     return "Database Ibrido K-RAG aggiornato con successo!"
 
 
@@ -517,7 +517,7 @@ def kg_updater(state: AgentState) -> dict:
     ]
 
     tools = [aggiorna_knowledge_graph_db]
-    db_agent = create_react_agent(llm, tools)
+    db_agent = create_agent(llm, tools)
 
     prompt = f"""Devi aggiornare il nostro database basato su grafi Neo4j con le informazioni dell'ultimo articolo scritto.
     
