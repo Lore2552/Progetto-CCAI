@@ -271,6 +271,9 @@ def drafter(state: AgentState) -> dict:
         f"4. Assicurati che l'articolo sia COERENTE (consistency) con le affermazioni passate. Non contraddirle.\n"
         f"5. Se pertinente, CONNETTI (connect with existing topics) il nuovo post a una di queste vecchie informazioni.\n"
         f"6. Scrivi in modo diretto come se fossi uno chef (VIETATO usare scuse, premesse o frasi come 'ecco l'articolo')."
+        f"7. L'articolo deve conterenere necessariamente la lista degli ingredienti della ricetta trattata.\n"
+        f"8. L'articolo deve contenere necessariamente la preparazione dettagliata della ricette trattata.\n"
+
     )
 
     if feedback and previous_draft:
