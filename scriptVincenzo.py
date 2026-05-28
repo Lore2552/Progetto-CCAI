@@ -319,123 +319,45 @@ def drafter(state: AgentState) -> dict:
 
 
 def human_review(state: AgentState) -> dict:
-    import tkinter as tk
-    from tkinter import messagebox
-    from tkinter.scrolledtext import ScrolledText
-
-    print("-> Esecuzione Human Review (Apertura finestra grafica in corso)...")
-
+    """Versione CLI della Human Review per evitare errori Tkinter su Mac."""
+    print("\n" + "="*70)
+    print("👀 REVISIONE UMANA RICHIESTA (Via Terminale)")
+    print("="*70)
+    
     draft_content = state.get("draft", "")
     topic = state.get("current_topic", "Senza Titolo")
-
+    
+    print(f"\n📌 TITOLO/ARGOMENTO: {topic}")
+    print("-" * 70)
+    print(draft_content)
+    print("-" * 70)
+    
+    print("\nCosa vuoi fare con questa bozza?")
+    print("[1] -> Approva e Pubblica (Invia al Knowledge Graph & RAG)")
+    print("[2] -> Scarta completamente la notizia (Il Planner cercherà un altro topic)")
+    print("[Scrivi un testo] -> Chiedi una modifica al Drafter (es. 'Scrivi in modo più formale')")
+    
+    scelta = input("\nLa tua scelta: ").strip().lower()
+    
     result = {}
-
-    def on_approve():
+    
+    if scelta in ['1', 's', 'si', 'y', 'yes']:
+        print("\n✅ [Human] Bozza approvata! Vado alla pubblicazione nel K-RAG...")
         result["status"] = "approved"
         result["human_feedback"] = ""
-        root.destroy()
-
-    def on_reject():
-        rejected = state.get("rejected_topics", []) + [state["current_topic"]]
+    elif scelta in ['2', 'n', 'no']:
+        print("\n❌ [Human] Bozza scartata. Riavvio il ciclo di pianificazione...")
+        rejected = state.get("rejected_topics", []) + [topic]
         result["status"] = "rejected_topic"
         result["human_feedback"] = "Notizia scartata dall'utente."
         result["rejected_topics"] = rejected
-        root.destroy()
-
-    def on_rewrite():
-        feedback = feedback_entry.get().strip()
-        if not feedback:
-            messagebox.showwarning(
-                "Attenzione",
-                "Devi inserire un feedback (es. 'Scrivilo più corto' o 'Usa un tono più formale') per poter riscrivere l'articolo.",
-            )
-            return
+    else:
+        if not scelta:
+            scelta = "Migliora lo stile e riprova."
+        print(f"\n🔁 [Human] Richiesta modifica: '{scelta}'. Rimando al Drafter...")
         result["status"] = "rewrite"
-        result["human_feedback"] = feedback
-        root.destroy()
-
-    root = tk.Tk()
-    root.title(f"Revisione Bozza: {topic}")
-    root.geometry("850x650")
-
-    lbl = tk.Label(
-        root,
-        text="Ecco la bozza generata. Scegli se approvare, chiedere modifiche o scartare l'argomento:",
-        font=("Helvetica", 12, "bold"),
-    )
-    lbl.pack(pady=10)
-
-    txt_area = ScrolledText(
-        root, wrap=tk.WORD, width=90, height=22, font=("Helvetica", 11)
-    )
-    txt_area.insert(tk.INSERT, draft_content)
-    txt_area.config(state=tk.DISABLED)
-    txt_area.pack(padx=20, pady=10, fill=tk.BOTH, expand=True)
-
-    frame_feedback = tk.Frame(root)
-    frame_feedback.pack(fill=tk.X, padx=20, pady=5)
-    tk.Label(
-        frame_feedback,
-        text="Opzionale - Spiega cosa modificare:",
-        font=("Helvetica", 10),
-    ).pack(side=tk.LEFT)
-    feedback_entry = tk.Entry(frame_feedback, font=("Helvetica", 11))
-    feedback_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
-
-    frame_btn = tk.Frame(root)
-    frame_btn.pack(pady=15)
-
-    tk.Button(
-        frame_btn,
-        text="✅ Approva e Pubblica",
-        bg="lightgreen",
-        font=("Helvetica", 11, "bold"),
-        padx=10,
-        pady=5,
-        command=on_approve,
-    ).pack(side=tk.LEFT, padx=15)
-    tk.Button(
-        frame_btn,
-        text="🔁 Riscrivi (Invia Feedback)",
-        bg="gold",
-        font=("Helvetica", 11, "bold"),
-        padx=10,
-        pady=5,
-        command=on_rewrite,
-    ).pack(side=tk.LEFT, padx=15)
-    tk.Button(
-        frame_btn,
-        text="❌ Scarta Notizia",
-        bg="lightcoral",
-        font=("Helvetica", 11, "bold"),
-        padx=10,
-        pady=5,
-        command=on_reject,
-    ).pack(side=tk.LEFT, padx=15)
-
-    def on_closing():
-        if messagebox.askokcancel(
-            "Arresta",
-            "La chiusura della finestra comporterà lo scarto della notizia. Procedere?",
-        ):
-            on_reject()
-
-    root.protocol("WM_DELETE_WINDOW", on_closing)
-
-    root.lift()
-    root.attributes("-topmost", True)
-    root.after_idle(root.attributes, "-topmost", False)
-
-    root.mainloop()
-
-    if not result:
-        rejected = state.get("rejected_topics", []) + [state["current_topic"]]
-        result = {
-            "status": "rejected_topic",
-            "human_feedback": "Notizia scartata (finestra chiusa).",
-            "rejected_topics": rejected,
-        }
-
+        result["human_feedback"] = scelta
+        
     return result
 
 
