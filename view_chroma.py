@@ -9,7 +9,7 @@ def main():
     )
     parser.add_argument(
         "--collection",
-        default=None,
+        default="archivio_ricette",
         help="Nome collection da aprire (default: auto-detect tra ricette_giallozafferano e archivio_ricette)",
     )
     args = parser.parse_args()
