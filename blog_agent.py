@@ -29,7 +29,9 @@ graph_db = Neo4jGraph(
 )
 
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
-collection_ricette = chroma_client.get_or_create_collection(name="ricette_giallozafferano")
+collection_ricette = chroma_client.get_or_create_collection(
+    name="ricette_giallozafferano"
+)
 collection_posts = chroma_client.get_or_create_collection(name="archivio_posts")
 
 KG_FILE = "knowledge_graph.graphml"
@@ -345,7 +347,7 @@ def drafter(state: AgentState) -> dict:
     sources = state.get("verified_resources", [])
     topic = state["current_topic"]
 
-    sources_text = "\n".join([s.get("content", "")[:1000] for s in sources])
+    sources_text = "\n".join([s.get("content", "")[:4000] for s in sources])
 
     prompt = (
         f"Scrivi un coinvolgente articolo di blog su come preparare la ricetta: '{topic}'.\n"
@@ -536,9 +538,7 @@ def aggiorna_knowledge_graph_db(topic: str, draft: str, source_urls: List[str]) 
     post_count = count_res[0]["totale"] if count_res else 0
     post_id = f"Post_{post_count + 1}"
 
-    collection_posts.add(
-        documents=[draft], metadatas=[{"topic": topic}], ids=[post_id]
-    )
+    collection_posts.add(documents=[draft], metadatas=[{"topic": topic}], ids=[post_id])
     print(f"   [ChromaDB] Vettori indicizzati per: {topic}")
 
     snippet = draft[:100]
