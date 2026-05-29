@@ -347,7 +347,7 @@ def drafter(state: AgentState) -> dict:
     sources = state.get("verified_resources", [])
     topic = state["current_topic"]
 
-    sources_text = "\n".join([s.get("content", "")[:4000] for s in sources])
+    sources_text = "\n".join([s.get("content", "")[:1000] for s in sources])
 
     prompt = (
         f"Scrivi un coinvolgente articolo di blog su come preparare la ricetta: '{topic}'.\n"
