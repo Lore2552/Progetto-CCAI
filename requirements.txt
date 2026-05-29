@@ -2,8 +2,10 @@ chromadb
 python-dotenv
 langchain-core
 langgraph
+langchain
 langchain-groq
 langchain-ollama
 langchain-community
+langchain_neo4j
 duckduckgo-search
 neo4j
