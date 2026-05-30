@@ -41,6 +41,54 @@ def detect_collection(client, preferred=None):
     raise ValueError("Nessuna collection trovata in ChromaDB.")
 
 
+def search_recipes_by_keyword(ids, metadatas, documents, keyword, search_mode="title"):
+    print_section(f"RICERCA KEYWORD: '{keyword}'")
+
+    keyword_lower = keyword.lower()
+    matches = []
+
+    for i in range(len(ids)):
+        meta = metadatas[i] if metadatas and metadatas[i] else {}
+        doc = documents[i] if documents and documents[i] else ""
+
+        titolo = meta.get("titolo", "")
+        url = meta.get("url", "")
+
+        if search_mode == "title":
+            searchable_text = titolo.lower()
+        elif search_mode == "document":
+            searchable_text = doc.lower()
+        else:
+            searchable_text = f"{titolo} {doc}".lower()
+
+        if keyword_lower in searchable_text:
+            matches.append(
+                {
+                    "id": ids[i],
+                    "titolo": titolo,
+                    "url": url,
+                    "doc_length": len(doc),
+                    "preview": safe_preview(doc, 800),
+                }
+            )
+
+    print(f"Modalità ricerca: {search_mode}")
+    print(f"Trovati {len(matches)} risultati.\n")
+
+    for idx, recipe in enumerate(matches, start=1):
+        print("-" * 80)
+        print(f"[{idx}] {recipe['titolo']}")
+        print(f"ID: {recipe['id']}")
+        print(f"URL: {recipe['url']}")
+        print(f"Lunghezza documento: {recipe['doc_length']} caratteri")
+        print("\nPreview:")
+        print(recipe["preview"])
+        print()
+
+    if not matches:
+        print("Nessun risultato trovato.")
+
+
 def analyze_metadata(metadatas):
     all_keys = set()
     key_counter = Counter()
@@ -285,6 +333,19 @@ def main():
         help="Path JSON opzionale per esportare un riassunto dei record.",
     )
 
+    parser.add_argument(
+        "--search",
+        default=None,
+        help="Keyword da cercare nei titoli o documenti, esempio: carbonara.",
+    )
+
+    parser.add_argument(
+        "--search-mode",
+        choices=["title", "document", "all"],
+        default="title",
+        help="Dove cercare la keyword: title, document o all. Default: title.",
+    )
+
     args = parser.parse_args()
 
     print_section("0. CONNESSIONE A CHROMADB")
@@ -315,6 +376,16 @@ def main():
 
     if not ids:
         print("La collection è vuota.")
+        return
+
+    if args.search:
+        search_recipes_by_keyword(
+            ids=ids,
+            metadatas=metadatas,
+            documents=documents,
+            keyword=args.search,
+            search_mode=args.search_mode,
+        )
         return
 
     analyze_metadata(metadatas)

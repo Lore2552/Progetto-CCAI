@@ -541,14 +541,19 @@ def aggiorna_knowledge_graph_db(topic: str, draft: str, source_urls: List[str]) 
     collection_posts.add(documents=[draft], metadatas=[{"topic": topic}], ids=[post_id])
     print(f"   [ChromaDB] Vettori indicizzati per: {topic}")
 
-    snippet = draft[:100]
-
     prompt_triple = (
-        f"Analizza questo testo culinario: '{draft}'.\n"
-        f"Estrai esattamente 3 relazioni fondamentali in formato tripla.\n"
-        f"Usa ESATTAMENTE il formato: Soggetto | RELAZIONE_IN_MAIUSCOLO | Oggetto\n"
-        f"Esempio: Ragù alla Bolognese | RICHIEDE | Carne macinata\n"
-        f"Rispondi SOLO con le 3 triple, una per riga."
+        f"Sei un esperto estrattore di dati per un Knowledge Graph culinario.\n"
+        f"Analizza questo testo sulla ricetta '{topic}':\n'{draft}'.\n\n"
+        f"Estrai TUTTE le relazioni fondamentali (ingredienti principali e tecniche) in formato tripla.\n"
+        f"Usa ESATTAMENTE il formato: Soggetto | RELAZIONE | Oggetto\n\n"
+        f"REGOLE TASSATIVE:\n"
+        f"1. Il Soggetto deve essere SEMPRE '{topic}'.\n"
+        f"2. Per la RELAZIONE, DEVI usare SOLO uno di questi termini pre-approvati (Vietato inventarne altri):\n"
+        f"   - USA_INGREDIENTE (Es. Ragù | USA_INGREDIENTE | Carne macinata)\n"
+        f"   - USA_TECNICA (Es. Risotto | USA_TECNICA | Mantecatura)\n"
+        f"   - TIPO_DI_PIATTO (Es. Tiramisù | TIPO_DI_PIATTO | Dolce)\n"
+        f"3. Estrai tutte le triple rilevanti che trovi nel testo (minimo 3, ma estraine quante ne servono per descrivere bene il piatto).\n"
+        f"4. Rispondi SOLO con le triple, una per riga. Nessun testo introduttivo, nessun commento, nessun backtick o markdown."
     )
     try:
         claims_response = llm.invoke([HumanMessage(content=prompt_triple)]).content
@@ -562,7 +567,7 @@ def aggiorna_knowledge_graph_db(topic: str, draft: str, source_urls: List[str]) 
 
     cypher_post = """
     MERGE (t:Topic {name: $topic})
-    CREATE (p:Post {id: $post_id, snippet: $snippet})
+    CREATE (p:Post {id: $post_id})
     MERGE (p)-[:COVERS_TOPIC]->(t)
     WITH t, p
     MATCH (old:Topic) WHERE old.name <> $topic
@@ -570,9 +575,7 @@ def aggiorna_knowledge_graph_db(topic: str, draft: str, source_urls: List[str]) 
     MERGE (t)-[:RELATED_TO]->(old)
     """
 
-    graph_db.query(
-        cypher_post, params={"topic": topic, "post_id": post_id, "snippet": snippet}
-    )
+    graph_db.query(cypher_post, params={"topic": topic, "post_id": post_id})
 
     for tripla in triple:
         try:
