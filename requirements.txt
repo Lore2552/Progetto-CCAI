@@ -9,3 +9,5 @@ langchain-community
 langchain_neo4j
 duckduckgo-search
 neo4j
+requests
+beautifulsoup4
