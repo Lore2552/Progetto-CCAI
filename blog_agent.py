@@ -69,7 +69,7 @@ def kg_rag_tool(topic: str) -> str:
     Fornisce gli ingredienti obbligatori, le tecniche e i passaggi di preparazione dettagliati.
     """
     print(f"      [KG-RAG Tool] Avvio recupero ibrido per la ricetta: '{topic}'...")
-    
+
     cypher_query = """
     MATCH (r:Recipe {name: $topic})
     OPTIONAL MATCH (r)-[:USES_INGREDIENT]->(i:Ingredient)
@@ -88,25 +88,39 @@ def kg_rag_tool(topic: str) -> str:
     tecniche_str = ""
     expanded_query = topic
 
-    if risultato and risultato[0]['recipe'] is not None:
+    if risultato and risultato[0]["recipe"] is not None:
         dati = risultato[0]
-        ingredienti_str = ", ".join(dati['ingredients'])
-        tecniche_str = ", ".join(dati['techniques'])
+        ingredienti_str = ", ".join(dati["ingredients"])
+        tecniche_str = ", ".join(dati["techniques"])
 
         expanded_query = f"{topic} {ingredienti_str} {tecniche_str}".strip()
-        print(f"      [KG-RAG Tool] Trovate info nel KG. Query espansa: '{expanded_query}'")
+        print(
+            f"      [KG-RAG Tool] Trovate info nel KG. Query espansa: '{expanded_query}'"
+        )
     else:
-        print("      [KG-RAG Tool] Nessuna informazione strutturata trovata nel KG. Uso la query base.")
+        print(
+            "      [KG-RAG Tool] Nessuna informazione strutturata trovata nel KG. Uso la query base."
+        )
 
     try:
-        risultati_chroma = collection_ricette.query(query_texts=[expanded_query], n_results=3)
+        risultati_chroma = collection_ricette.query(
+            query_texts=[expanded_query], n_results=3
+        )
         testo_recuperato = ""
-        
-        if risultati_chroma and risultati_chroma.get("documents") and risultati_chroma["documents"][0]:
+
+        if (
+            risultati_chroma
+            and risultati_chroma.get("documents")
+            and risultati_chroma["documents"][0]
+        ):
             documenti = risultati_chroma["documents"][0]
-            testo_recuperato = "\n\n--- FRAMMENTO VETTORIALE ---\n".join([doc[:2000] for doc in documenti])
+            testo_recuperato = "\n\n--- FRAMMENTO VETTORIALE ---\n".join(
+                [doc[:2000] for doc in documenti]
+            )
         else:
-            testo_recuperato = "Nessun documento testuale di supporto trovato nel database locale."
+            testo_recuperato = (
+                "Nessun documento testuale di supporto trovato nel database locale."
+            )
     except Exception as e:
         testo_recuperato = f"Errore durante la ricerca in ChromaDB: {e}"
 
@@ -297,7 +311,7 @@ def resource_researcher(state: AgentState) -> dict:
     tools = [kg_rag_tool, valuta_documento_locale, cerca_e_leggi_sul_web]
     react_agent = create_agent(llm, tools)
 
-    prompt = f"""Devi raccogliere dati completi su come si prepara questa ricetta italiana: '{topic}'.
+    prompt = f"""Devi raccogliere dati completi su come si prepara questa ricetta: '{topic}'.
     Hai a disposizione 2 tool per la ricerca:
     1. 'kg_rag_tool': Cerca la ricetta nel database locale ibrido. Restituisce le regole fisse del Knowledge Graph (ingredienti e tecniche obbligatorie) e il frammento di testo completo della ricetta.
     2. 'cerca_e_leggi_sul_web': Cerca ed estrae integralmente i passaggi da pagine internet. Utilizzalo se la ricetta locale è assente, parziale o per colmare i dettagli mancanti.
