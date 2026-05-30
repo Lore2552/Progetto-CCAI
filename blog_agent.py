@@ -71,10 +71,10 @@ def kg_rag_tool(topic: str) -> str:
     print(f"      [KG-RAG Tool] Avvio recupero ibrido per la ricetta: '{topic}'...")
 
     cypher_query = """
-    MATCH (r:Recipe {name: $topic})
+    MATCH (r:Recipe {title: $topic})
     OPTIONAL MATCH (r)-[:USES_INGREDIENT]->(i:Ingredient)
-    OPTIONAL MATCH (r)-[:HAS_TECHNIQUE]->(t:Technique)
-    RETURN r.name AS recipe, 
+    OPTIONAL MATCH (r)-[:USES_TECHNIQUE]->(t:Technique)
+    RETURN r.title AS recipe, 
            collect(DISTINCT i.name) AS ingredients, 
            collect(DISTINCT t.name) AS techniques
     """
