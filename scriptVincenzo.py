@@ -9,8 +9,11 @@ from langgraph.graph import StateGraph, START, END
 from langchain_groq import ChatGroq
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage
-from langchain_community.tools import DuckDuckGoSearchRun
+from langchain_community.utilities import DuckDuckGoSearchAPIWrapper
 from langchain_neo4j import Neo4jGraph
+from langchain_core.tools import tool
+import requests
+from bs4 import BeautifulSoup
 import datetime
 
 load_dotenv()
@@ -18,7 +21,7 @@ load_dotenv()
 llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.1)
 # llm = ChatOllama(model="llama3.1:8b", temperature=0.5)
 
-ddg_search = DuckDuckGoSearchRun()
+ddg_search = DuckDuckGoSearchAPIWrapper(max_results=5)
 
 graph_db = Neo4jGraph(
     url=os.environ.get("NEO4J_URI"),
@@ -27,7 +30,10 @@ graph_db = Neo4jGraph(
 )
 
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
-chroma_collection = chroma_client.get_or_create_collection(name="archivio_ricette")
+collection_ricette = chroma_client.get_or_create_collection(
+    name="ricette_giallozafferano"
+)
+collection_posts = chroma_client.get_or_create_collection(name="archivio_posts")
 
 KG_FILE = "knowledge_graph.graphml"
 
@@ -57,26 +63,167 @@ class AgentState(TypedDict):
 
 
 @tool
-def cerca_nei_documenti_locali(query: str) -> str:
-    """Cerca nel database vettoriale locale informazioni storiche su ricette passate."""
-    print(f"      [RAG Tool] Ricerca in ChromaDB per: '{query}'...")
-    risultati = chroma_collection.query(query_texts=[query], n_results=1)
-    if risultati and risultati.get("documents") and risultati["documents"][0]:
-        documento = risultati["documents"][0][0]
+def kg_rag_tool(topic: str) -> str:
+    """
+    Usa questo tool per ottenere il contesto completo di una ricetta combinando dati strutturati (Knowledge Graph) e testi estesi (Vector Database).
+    Fornisce gli ingredienti obbligatori, le tecniche e i passaggi di preparazione dettagliati.
+    """
+    print(f"      [KG-RAG Tool] Avvio recupero ibrido per la ricetta: '{topic}'...")
+    
+    cypher_query = """
+    MATCH (r:Recipe {name: $topic})
+    OPTIONAL MATCH (r)-[:USES_INGREDIENT]->(i:Ingredient)
+    OPTIONAL MATCH (r)-[:HAS_TECHNIQUE]->(t:Technique)
+    RETURN r.name AS recipe, 
+           collect(DISTINCT i.name) AS ingredients, 
+           collect(DISTINCT t.name) AS techniques
+    """
+    try:
+        risultato = graph_db.query(cypher_query, params={"topic": topic})
+    except Exception as e:
+        print(f"      [KG-RAG Tool] Errore KG: {e}")
+        risultato = []
 
-        distanza = risultati["distances"][0][0] if "distances" in risultati else 0
-        print(f"      [RAG Tool] Distanza semantica rilevata: {distanza:.4f}")
+    ingredienti_str = ""
+    tecniche_str = ""
+    expanded_query = topic
 
-        if distanza < 1.5:
-            print("      [RAG Tool] Documento pertinente! Lo passo all'agente.")
-            return f"Documento locale trovato: {documento}"
+    if risultato and risultato[0]['recipe'] is not None:
+        dati = risultato[0]
+        ingredienti_str = ", ".join(dati['ingredients'])
+        tecniche_str = ", ".join(dati['techniques'])
+
+        expanded_query = f"{topic} {ingredienti_str} {tecniche_str}".strip()
+        print(f"      [KG-RAG Tool] Trovate info nel KG. Query espansa: '{expanded_query}'")
+    else:
+        print("      [KG-RAG Tool] Nessuna informazione strutturata trovata nel KG. Uso la query base.")
+
+    try:
+        risultati_chroma = collection_ricette.query(query_texts=[expanded_query], n_results=3)
+        testo_recuperato = ""
+        
+        if risultati_chroma and risultati_chroma.get("documents") and risultati_chroma["documents"][0]:
+            documenti = risultati_chroma["documents"][0]
+            testo_recuperato = "\n\n--- FRAMMENTO VETTORIALE ---\n".join([doc[:2000] for doc in documenti])
         else:
-            print(
-                "      [RAG Tool] Documento trovato ma TROPPO DISTANTE (Low Confidence). Lo scarto."
-            )
-            return "Trovato documento ma non pertinente. Cerca sul web."
+            testo_recuperato = "Nessun documento testuale di supporto trovato nel database locale."
+    except Exception as e:
+        testo_recuperato = f"Errore durante la ricerca in ChromaDB: {e}"
 
-    return "Nessun documento locale trovato. Cerca sul web."
+    risposta_tool = f"RISULTATI DEL RECUPERO KG-RAG PER '{topic}':\n\n"
+    risposta_tool += f"[1] DATI STRUTTURATI (REGOLE TASSATIVE DAL KNOWLEDGE GRAPH):\n"
+    risposta_tool += f"- Ingredienti Obbligatori: {ingredienti_str if ingredienti_str else 'Nessuno specificato'}\n"
+    risposta_tool += f"- Tecniche Richieste: {tecniche_str if tecniche_str else 'Nessuna specificata'}\n\n"
+    risposta_tool += f"[2] TESTI DETTAGLIATI (DAL VECTOR DATABASE):\n"
+    risposta_tool += testo_recuperato
+
+    return risposta_tool
+
+
+@tool
+def valuta_documento_locale(document_text: str, target_topic: str) -> str:
+    """Valuta in modo critico se il testo della ricetta fornito è PERTINENTE rispetto al target_topic richiesto."""
+    print(
+        f"      [Fact Checker Tool] Valutazione documento rispetto al target: '{target_topic}'..."
+    )
+    prompt = (
+        f"Il topic esatto da trattare è: '{target_topic}'.\n"
+        f"Ecco il testo trovato nel database locale:\n{document_text}\n\n"
+        f"Il testo contiene le istruzioni esatte per '{target_topic}'? Rispondi in modo secco: 'SI, COPRE INTERAMENTE', oppure 'PARZIALE' (es. manca una specifica variante), oppure 'NO'."
+    )
+    try:
+        return llm.invoke([HumanMessage(content=prompt)]).content
+    except Exception as e:
+        return f"Errore valutazione: {e}"
+
+
+@tool
+def cerca_e_leggi_sul_web(query: str) -> str:
+    """Cerca sul web (tramite DuckDuckGo), estrae HTML e restituisce direttamente il testo completo delle pagine trovate senza passare URL json."""
+    print(f"      [Web Tool] Eseguo ricerca web e Scraping DIRETTO per: '{query}'...")
+    try:
+        results = ddg_search.results(query, max_results=3)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+        }
+        testo_estratto = ""
+        for r in results:
+            url = r["link"]
+            try:
+                resp = requests.get(url, headers=headers, timeout=10)
+                soup = BeautifulSoup(resp.content, "html.parser")
+
+                # Rimuoviamo il rumore di fondo (menu, commenti, ecc.)
+                for unwanted in soup(
+                    [
+                        "nav",
+                        "header",
+                        "footer",
+                        "script",
+                        "style",
+                        "aside",
+                        "form",
+                        "meta",
+                        "noscript",
+                    ]
+                ):
+                    unwanted.extract()
+
+                # Rimuoviamo blocchi spesso contenti rumore (sidebar, widgets, commenti)
+                for unwanted in soup.find_all(
+                    lambda tag: tag.has_attr("class")
+                    and any(
+                        c in str(tag["class"]).lower()
+                        for c in [
+                            "comment",
+                            "sidebar",
+                            "widget",
+                            "menu",
+                            "social",
+                            "share",
+                        ]
+                    )
+                ):
+                    unwanted.extract()
+                for unwanted in soup.find_all(
+                    lambda tag: tag.has_attr("id")
+                    and any(
+                        i in str(tag["id"]).lower()
+                        for i in ["comment", "sidebar", "widget", "menu"]
+                    )
+                ):
+                    unwanted.extract()
+
+                # Tentiamo di isolare il contenuto principale
+                main_content = (
+                    soup.find("article")
+                    or soup.find("main")
+                    or soup.find(
+                        "div", class_=lambda c: c and "content" in str(c).lower()
+                    )
+                    or soup.find("body")
+                    or soup
+                )
+
+                # Estraiamo il testo dividendo col newline e ripulendo gli spazi multipli
+                testo_sporco = main_content.get_text(separator="\n", strip=True)
+                testo_pulito = "\n".join(
+                    [line.strip() for line in testo_sporco.splitlines() if line.strip()]
+                )
+
+                if len(testo_pulito) > 100:
+                    testo_estratto += (
+                        f"\n--- FONTE (URL: {url}) ---\n{testo_pulito[:8000]}\n"
+                    )
+            except Exception:
+                pass
+
+        if not testo_estratto:
+            return "Non è stato possibile estrarre i contenuti delle pagine."
+        return testo_estratto
+    except Exception as e:
+        print(f"      [Web Tool] Errore: {e}")
+        return "Errore nella ricerca."
 
 
 def topic_planner(state: AgentState) -> dict:
@@ -125,116 +272,104 @@ def topic_planner(state: AgentState) -> dict:
 
 @tool
 def cerca_sul_web(query: str) -> str:
-    """Cerca sul web le ultime notizie e informazioni aggiornate."""
+    """Restituisce un JSON sotto forma di stringa contenente i link trovati sul web tramite DuckDuckGo Search per la query specificata."""
     print(f"      [Web Tool] Eseguo ricerca web tramite DuckDuckGo per: '{query}'...")
     try:
-        res = ddg_search.invoke(query)
-        print(f"      [Web Tool] Ricerca completata. Trovati {len(res)} caratteri.")
-        return res
+        results = ddg_search.results(query, max_results=6)
+        raw_results = []
+        for r in results:
+            raw_results.append(
+                {"url": r["link"], "snippet": r["snippet"], "title": r["title"]}
+            )
+        print(f"      [Web Tool] Trovati {len(raw_results)} risultati raw.")
+        return json.dumps(raw_results)
     except Exception as e:
         print(f"      [Web Tool] Errore: {e}")
-        return "Errore nella ricerca."
+        return json.dumps([])
 
 
 def resource_researcher(state: AgentState) -> dict:
     topic = state["current_topic"]
-
     trace = state.get("reasoning_trace", [])
 
     print(f"-> Esecuzione Resource Researcher (con paradigma ReAct) per: {topic}")
 
-    tools = [cerca_sul_web, cerca_nei_documenti_locali]
+    tools = [kg_rag_tool, valuta_documento_locale, cerca_e_leggi_sul_web]
     react_agent = create_agent(llm, tools)
 
     prompt = f"""Devi raccogliere dati completi su come si prepara questa ricetta italiana: '{topic}'.
-    ATTENZIONE: Assicurati di cercare notizie, preparazione, e ingredienti riguardanti UNA SOLA RICETTA.
-    
-    REGOLE TASSATIVE:
-    1. REASONING: Prima di usare qualsiasi tool, DEVI spiegare il tuo ragionamento iniziando ESATTAMENTE con 'Thought: [la tua giustificazione]'.
-    2. PRIORITÀ DI RICERCA (KRAG): Usa PRIMA il tool 'cerca_nei_documenti_locali' per trovare se il topic è pertinente con un documento presente nel database.
-    3. FALLBACK: Solo se 'cerca_nei_documenti_locali' non restituisce risultati sufficienti per completare la ricetta, puoi usare il tool 'cerca_sul_web' (massimo 1 o 2 volte).
-    4. CONDIZIONE DI USCITA: Appena hai trovato gli ingredienti e i passaggi principali, FERMATI IMMEDIATAMENTE. Non chiamare più tool e scrivi un riassunto finale con i dati che hai trovato.
+    Hai a disposizione 2 tool per la ricerca:
+    1. 'kg_rag_tool': Cerca la ricetta nel database locale ibrido. Restituisce le regole fisse del Knowledge Graph (ingredienti e tecniche obbligatorie) e il frammento di testo completo della ricetta.
+    2. 'cerca_e_leggi_sul_web': Cerca ed estrae integralmente i passaggi da pagine internet. Utilizzalo se la ricetta locale è assente, parziale o per colmare i dettagli mancanti.
+
+    Flusso Operativo Richiesto:
+    1. REASONING: Inizia ogni azione con 'Thought: ...'
+    2. Usa SEMPRE come prima azione il tool 'kg_rag_tool'.
+    3. Valuta tu stesso il risultato ottenuto. Se il testo contiene le istruzioni complete per '{topic}' e rispetta gli ingredienti/tecniche obbligatorie, FERMATI ed esponi tu una sintesi che unisce ingredienti e passaggi di preparazione del piatto in un testo descrittivo.
+    4. Se valuti che mancano dati specifici al topic, o se il tool locale non trova nulla, usa 'cerca_e_leggi_sul_web' per ottenere l'intera ricetta dal web in un colpo solo.
+    5. Alla fine di tutti i controlli, integra ciò che hai ottenuto di buono sia in locale (se pertinente) che sul web. Come TUA risposta FINALE restituisci un unico riassunto descrittivo che contenga chiaramente la lista degli ingredienti (rispettando rigorosamente i dati del Knowledge Graph) e la preparazione. Non inviare json.
     """
-    print(
-        "   [ReAct] Avvio l'agente. Attendi l'elaborazione (potrebbe richiedere un minuto in locale)..."
-    )
+    
+    print("   [ReAct] Avvio l'agente. Attendi l'elaborazione...")
     try:
         response = react_agent.invoke({"messages": [HumanMessage(content=prompt)]})
         print("   [ReAct] Elaborazione conclusa!")
-    except Exception as e:
-        print(f"   [Errore ReAct Agent] {e}")
-        response = None
 
-    raw = []
-
-    if response:
-        messages = response.get("messages", [])
-
-        for msg in messages:
-
-            if (
-                getattr(msg, "type", "") == "ai"
-                and hasattr(msg, "tool_calls")
-                and msg.tool_calls
-            ):
-
-                if msg.content:
+        final_answer = ""
+        for msg in response.get("messages", []):
+            if getattr(msg, "type", "") == "ai" and msg.content:
+                final_answer = msg.content
+                if hasattr(msg, "tool_calls") and msg.tool_calls:
                     thought_str = f"Thought: {msg.content.strip()}"
                     trace.append(thought_str)
                     print(f"   [ReAct] {thought_str}")
-
-                for tool_call in msg.tool_calls:
-                    action_str = f"Action: Chiamo il tool '{tool_call['name']}' con query {tool_call['args']}"
-                    trace.append(action_str)
-                    print(f"   [ReAct] {action_str}")
-
+                    for tool_call in msg.tool_calls:
+                        action_str = f"Action: Chiamo il tool '{tool_call['name']}' con query {tool_call['args']}"
+                        trace.append(action_str)
+                        print(f"   [ReAct] {action_str}")
             elif getattr(msg, "type", "") == "tool":
-                obs_str = f"Observation: Risultato del tool (ID: {msg.tool_call_id}). Letti {len(msg.content)} caratteri."
+                obs_str = f"Observation: Risultato del tool {msg.tool_call_id}. (Letti {len(msg.content)} caratteri)"
                 trace.append(obs_str)
                 print(f"   [ReAct] {obs_str}\n")
 
-                raw.append({"url": "Search Output", "content": msg.content})
+        raw = [{"url": "ReAct Synthesis", "content": final_answer, "title": topic}]
 
-        if not raw:
-            print("   [Fallback] Nessun tool chiamato o estrazione fallita.")
-            search_res = ddg_search.invoke(topic)
-            raw.append({"url": f"Search: {topic}", "content": search_res})
+    except Exception as e:
+        print(f"   [Errore ReAct Agent] {e}")
+        raw = []
 
     return {"raw_resources": raw, "reasoning_trace": trace, "status": "research_done"}
 
 
 def quality_fact_checker(state: AgentState) -> dict:
-    print("-> Esecuzione Quality & Fact Checker...")
+    print("-> Esecuzione Quality & Fact Checker (Verifica Contenuti)...")
     raw = state.get("raw_resources", [])
     topic = state["current_topic"]
-    verified = []
+    valid_links = []
 
     risultati = graph_db.query("MATCH (t:Topic) RETURN t.name AS name")
     past_topics = [res["name"] for res in risultati if res.get("name")]
 
     for res in raw:
-        content = res.get("content", "")[:1500]
+        content = res.get("content", "")[:3500]
         prompt = (
-            f"Sei un Fact Checker. Ricetta richiesta: '{topic}'.\n\n"
+            f"Sei un Fact Checker. Ricetta sintetica presentata: '{topic}'.\n\n"
             f"KNOWLEDGE GRAPH (RICETTE GIA' SCRITTE): {past_topics}\n"
-            f"Frammento di contenuto: '{content}'.\n\n"
-            f"RISPONDI 'NO' SE IL CONTENUTO PARLA DI RICETTE GIÀ PRESENTI NEL KNOWLEDGE GRAPH.\n"
-            f"Questo contenuto porta informazioni NUOVE, relative alla preparazione di questo piatto, ed è corretto? Rispondi esattamente 'SI' o 'NO'."
+            f"Testo della ricetta da validare:\n'{content}'.\n\n"
+            f"La ricetta è già inclusa nel knowledge graph? Se si, rispondi 'NO'.\n"
+            f"Il procedimento espone la preparazione di questo piatto ed è valido? Rispondi esattamente 'SI' o 'NO'."
         )
         try:
             eval_res = llm.invoke([HumanMessage(content=prompt)]).content.upper()
             if "SI" in eval_res or "SÌ" in eval_res:
-                verified.append(res)
-                print("   [LLM Evaluator] Fonte approvata.")
+                valid_links.append(res)
+                print("   [LLM Evaluator] Output di ricerca approvato.")
             else:
-                print(
-                    f"   [LLM Evaluator] Fonte scartata (Ripetizione o irrilevante). Risposta: {eval_res}"
-                )
+                print(f"   [LLM Evaluator] Scartato o non valido. Resp: {eval_res}")
         except Exception:
-            print("   [LLM Evaluator] Errore API, accetto la fonte per default.")
-            verified.append(res)
+            valid_links.append(res)
 
-    return {"verified_resources": verified, "status": "fact_checking_done"}
+    return {"verified_resources": valid_links, "status": "fact_checking_done"}
 
 
 def drafter(state: AgentState) -> dict:
@@ -273,7 +408,6 @@ def drafter(state: AgentState) -> dict:
         f"6. Scrivi in modo diretto come se fossi uno chef (VIETATO usare scuse, premesse o frasi come 'ecco l'articolo')."
         f"7. L'articolo deve conterenere necessariamente la lista degli ingredienti della ricetta trattata.\n"
         f"8. L'articolo deve contenere necessariamente la preparazione dettagliata della ricette trattata.\n"
-
     )
 
     if feedback and previous_draft:
@@ -323,27 +457,27 @@ def drafter(state: AgentState) -> dict:
 
 def human_review(state: AgentState) -> dict:
     """Versione CLI della Human Review per evitare errori Tkinter su Mac."""
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("👀 REVISIONE UMANA RICHIESTA (Via Terminale)")
-    print("="*70)
-    
+    print("=" * 70)
+
     draft_content = state.get("draft", "")
     topic = state.get("current_topic", "Senza Titolo")
-    
+
     print(f"\n📌 TITOLO/ARGOMENTO: {topic}")
     print("-" * 70)
     print(draft_content)
     print("-" * 70)
-    
+
     print("\nCosa vuoi fare con questa bozza?")
     print("[1] -> Approva e Pubblica (Invia al Knowledge Graph & RAG)")
     print("[2] -> Scarta completamente la notizia (Il Planner cercherà un altro topic)")
     print("[Scrivi un testo] -> Chiedi una modifica al Drafter (es. 'Scrivi in modo più formale')")
-    
+
     scelta = input("\nLa tua scelta: ").strip().lower()
-    
+
     result = {}
-    
+
     if scelta in ['1', 's', 'si', 'y', 'yes']:
         print("\n✅ [Human] Bozza approvata! Vado alla pubblicazione nel K-RAG...")
         result["status"] = "approved"
@@ -360,8 +494,9 @@ def human_review(state: AgentState) -> dict:
         print(f"\n🔁 [Human] Richiesta modifica: '{scelta}'. Rimando al Drafter...")
         result["status"] = "rewrite"
         result["human_feedback"] = scelta
-        
+
     return result
+
 
 
 @tool
@@ -372,19 +507,22 @@ def aggiorna_knowledge_graph_db(topic: str, draft: str, source_urls: List[str]) 
     post_count = count_res[0]["totale"] if count_res else 0
     post_id = f"Post_{post_count + 1}"
 
-    chroma_collection.add(
-        documents=[draft], metadatas=[{"topic": topic}], ids=[post_id]
-    )
+    collection_posts.add(documents=[draft], metadatas=[{"topic": topic}], ids=[post_id])
     print(f"   [ChromaDB] Vettori indicizzati per: {topic}")
 
-    snippet = draft[:100]
-
     prompt_triple = (
-        f"Analizza questo testo culinario: '{draft}'.\n"
-        f"Estrai esattamente 3 relazioni fondamentali in formato tripla.\n"
-        f"Usa ESATTAMENTE il formato: Soggetto | RELAZIONE_IN_MAIUSCOLO | Oggetto\n"
-        f"Esempio: Ragù alla Bolognese | RICHIEDE | Carne macinata\n"
-        f"Rispondi SOLO con le 3 triple, una per riga."
+        f"Sei un esperto estrattore di dati per un Knowledge Graph culinario.\n"
+        f"Analizza questo testo sulla ricetta '{topic}':\n'{draft}'.\n\n"
+        f"Estrai TUTTE le relazioni fondamentali (ingredienti principali e tecniche) in formato tripla.\n"
+        f"Usa ESATTAMENTE il formato: Soggetto | RELAZIONE | Oggetto\n\n"
+        f"REGOLE TASSATIVE:\n"
+        f"1. Il Soggetto deve essere SEMPRE '{topic}'.\n"
+        f"2. Per la RELAZIONE, DEVI usare SOLO uno di questi termini pre-approvati (Vietato inventarne altri):\n"
+        f"   - USA_INGREDIENTE (Es. Ragù | USA_INGREDIENTE | Carne macinata)\n"
+        f"   - USA_TECNICA (Es. Risotto | USA_TECNICA | Mantecatura)\n"
+        f"   - TIPO_DI_PIATTO (Es. Tiramisù | TIPO_DI_PIATTO | Dolce)\n"
+        f"3. Estrai tutte le triple rilevanti che trovi nel testo (minimo 3, ma estraine quante ne servono per descrivere bene il piatto).\n"
+        f"4. Rispondi SOLO con le triple, una per riga. Nessun testo introduttivo, nessun commento, nessun backtick o markdown."
     )
     try:
         claims_response = llm.invoke([HumanMessage(content=prompt_triple)]).content
@@ -398,7 +536,7 @@ def aggiorna_knowledge_graph_db(topic: str, draft: str, source_urls: List[str]) 
 
     cypher_post = """
     MERGE (t:Topic {name: $topic})
-    CREATE (p:Post {id: $post_id, snippet: $snippet})
+    CREATE (p:Post {id: $post_id})
     MERGE (p)-[:COVERS_TOPIC]->(t)
     WITH t, p
     MATCH (old:Topic) WHERE old.name <> $topic
@@ -406,9 +544,7 @@ def aggiorna_knowledge_graph_db(topic: str, draft: str, source_urls: List[str]) 
     MERGE (t)-[:RELATED_TO]->(old)
     """
 
-    graph_db.query(
-        cypher_post, params={"topic": topic, "post_id": post_id, "snippet": snippet}
-    )
+    graph_db.query(cypher_post, params={"topic": topic, "post_id": post_id})
 
     for tripla in triple:
         try:

@@ -11,6 +11,7 @@ from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage
 from langchain_community.utilities import DuckDuckGoSearchAPIWrapper
 from langchain_neo4j import Neo4jGraph
+from langchain_core.tools import tool
 import requests
 from bs4 import BeautifulSoup
 import datetime
@@ -62,15 +63,61 @@ class AgentState(TypedDict):
 
 
 @tool
-def cerca_nei_documenti_locali(query: str) -> str:
-    """Cerca nel database vettoriale locale informazioni storiche su ricette passate."""
-    print(f"      [RAG Tool] Ricerca in ChromaDB per: '{query}'...")
-    risultati = collection_ricette.query(query_texts=[query], n_results=1)
-    if risultati and risultati.get("documents") and risultati["documents"][0]:
-        documento = risultati["documents"][0][0]
-        distanza = risultati["distances"][0][0] if "distances" in risultati else 0
-        return f"Trovato documento nel DB Locale (distanza {distanza:.2f}):\n{documento[:3000]}"
-    return "Nessun documento locale trovato."
+def kg_rag_tool(topic: str) -> str:
+    """
+    Usa questo tool per ottenere il contesto completo di una ricetta combinando dati strutturati (Knowledge Graph) e testi estesi (Vector Database).
+    Fornisce gli ingredienti obbligatori, le tecniche e i passaggi di preparazione dettagliati.
+    """
+    print(f"      [KG-RAG Tool] Avvio recupero ibrido per la ricetta: '{topic}'...")
+    
+    cypher_query = """
+    MATCH (r:Recipe {name: $topic})
+    OPTIONAL MATCH (r)-[:USES_INGREDIENT]->(i:Ingredient)
+    OPTIONAL MATCH (r)-[:HAS_TECHNIQUE]->(t:Technique)
+    RETURN r.name AS recipe, 
+           collect(DISTINCT i.name) AS ingredients, 
+           collect(DISTINCT t.name) AS techniques
+    """
+    try:
+        risultato = graph_db.query(cypher_query, params={"topic": topic})
+    except Exception as e:
+        print(f"      [KG-RAG Tool] Errore KG: {e}")
+        risultato = []
+
+    ingredienti_str = ""
+    tecniche_str = ""
+    expanded_query = topic
+
+    if risultato and risultato[0]['recipe'] is not None:
+        dati = risultato[0]
+        ingredienti_str = ", ".join(dati['ingredients'])
+        tecniche_str = ", ".join(dati['techniques'])
+
+        expanded_query = f"{topic} {ingredienti_str} {tecniche_str}".strip()
+        print(f"      [KG-RAG Tool] Trovate info nel KG. Query espansa: '{expanded_query}'")
+    else:
+        print("      [KG-RAG Tool] Nessuna informazione strutturata trovata nel KG. Uso la query base.")
+
+    try:
+        risultati_chroma = collection_ricette.query(query_texts=[expanded_query], n_results=3)
+        testo_recuperato = ""
+        
+        if risultati_chroma and risultati_chroma.get("documents") and risultati_chroma["documents"][0]:
+            documenti = risultati_chroma["documents"][0]
+            testo_recuperato = "\n\n--- FRAMMENTO VETTORIALE ---\n".join([doc[:2000] for doc in documenti])
+        else:
+            testo_recuperato = "Nessun documento testuale di supporto trovato nel database locale."
+    except Exception as e:
+        testo_recuperato = f"Errore durante la ricerca in ChromaDB: {e}"
+
+    risposta_tool = f"RISULTATI DEL RECUPERO KG-RAG PER '{topic}':\n\n"
+    risposta_tool += f"[1] DATI STRUTTURATI (REGOLE TASSATIVE DAL KNOWLEDGE GRAPH):\n"
+    risposta_tool += f"- Ingredienti Obbligatori: {ingredienti_str if ingredienti_str else 'Nessuno specificato'}\n"
+    risposta_tool += f"- Tecniche Richieste: {tecniche_str if tecniche_str else 'Nessuna specificata'}\n\n"
+    risposta_tool += f"[2] TESTI DETTAGLIATI (DAL VECTOR DATABASE):\n"
+    risposta_tool += testo_recuperato
+
+    return risposta_tool
 
 
 @tool
@@ -247,21 +294,20 @@ def resource_researcher(state: AgentState) -> dict:
 
     print(f"-> Esecuzione Resource Researcher (con paradigma ReAct) per: {topic}")
 
-    tools = [cerca_nei_documenti_locali, valuta_documento_locale, cerca_e_leggi_sul_web]
+    tools = [kg_rag_tool, valuta_documento_locale, cerca_e_leggi_sul_web]
     react_agent = create_agent(llm, tools)
 
     prompt = f"""Devi raccogliere dati completi su come si prepara questa ricetta italiana: '{topic}'.
-    Hai a disposizione 3 tool:
-    1. 'cerca_nei_documenti_locali': Cerca la ricetta nel database locale.
-    2. 'valuta_documento_locale': Inviagli il testo appena trovato nel DB e il topic esatto per valutarne la pertinenza oggettiva.
-    3. 'cerca_e_leggi_sul_web': Cerca ed estrae integralmente i passaggi da pagine internet. Utilizzalo se la ricetta locale è assente, parziale o per colmare i dettagli mancanti.
+    Hai a disposizione 2 tool per la ricerca:
+    1. 'kg_rag_tool': Cerca la ricetta nel database locale ibrido. Restituisce le regole fisse del Knowledge Graph (ingredienti e tecniche obbligatorie) e il frammento di testo completo della ricetta.
+    2. 'cerca_e_leggi_sul_web': Cerca ed estrae integralmente i passaggi da pagine internet. Utilizzalo se la ricetta locale è assente, parziale o per colmare i dettagli mancanti.
 
     Flusso Operativo Richiesto:
     1. REASONING: Inizia ogni azione con 'Thought: ...'
-    2. Trova il documento usando 'cerca_nei_documenti_locali'.
-    3. Passa SUBITO il documento al tool 'valuta_documento_locale'. Se la risposta dice che copre interamente la variante, FERMATI ed esponi tu una sintesi che unisce ingredienti e passaggi di preparazione del piatto in un testo descrittivo.
-    4. Se la risposta del tool di valutazione denota che mancano dati specifici al topic, o non c'è, usa 'cerca_e_leggi_sul_web' per ottenere l'intera ricetta dal web in un colpo solo.
-    5. Alla fine di tutti i controlli, integra ciò che hai ottenuto di buono sia in locale (se pertinente) che sul web. Come TUA risposta FINALE restituisci un unico riassunto descrittivo che contenga chiaramente la lista degli ingredienti e la preparazione. Non inviare json.
+    2. Usa SEMPRE come prima azione il tool 'kg_rag_tool'.
+    3. Valuta tu stesso il risultato ottenuto. Se il testo contiene le istruzioni complete per '{topic}' e rispetta gli ingredienti/tecniche obbligatorie, FERMATI ed esponi tu una sintesi che unisce ingredienti e passaggi di preparazione del piatto in un testo descrittivo.
+    4. Se valuti che mancano dati specifici al topic, o se il tool locale non trova nulla, usa 'cerca_e_leggi_sul_web' per ottenere l'intera ricetta dal web in un colpo solo.
+    5. Alla fine di tutti i controlli, integra ciò che hai ottenuto di buono sia in locale (se pertinente) che sul web. Come TUA risposta FINALE restituisci un unico riassunto descrittivo che contenga chiaramente la lista degli ingredienti (rispettando rigorosamente i dati del Knowledge Graph) e la preparazione. Non inviare json.
     """
 
     print("   [ReAct] Avvio l'agente. Attendi l'elaborazione...")
