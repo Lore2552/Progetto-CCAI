@@ -347,12 +347,19 @@ def resource_researcher(state: AgentState) -> dict:
                 print(f"   [ReAct] {obs_str}\n")
 
         raw = [{"url": "ReAct Synthesis", "content": final_answer, "title": topic}]
+        contesto_rag_effettivo = kg_rag_tool.invoke({"topic": topic})
 
     except Exception as e:
         print(f"   [Errore ReAct Agent] {e}")
         raw = []
+        contesto_rag_effettivo = None
 
-    return {"raw_resources": raw, "reasoning_trace": trace, "status": "research_done"}
+    return {
+        "raw_resources": raw,
+        "kg_context": contesto_rag_effettivo,
+        "reasoning_trace": trace,
+        "status": "research_done",
+    }
 
 
 def quality_fact_checker(state: AgentState) -> dict:
@@ -407,14 +414,18 @@ def drafter(state: AgentState) -> dict:
     sources = state.get("verified_resources", [])
     topic = state["current_topic"]
 
+    contesto_rag = state.get("kg_context", "Nessun contesto RAG locale trovato.")
     sources_text = "\n".join([s.get("content", "")[:1000] for s in sources])
 
     prompt = (
-        f"Scrivi un coinvolgente articolo di blog su come preparare la ricetta: '{topic}'.\n"
-        f"Usa questi frammenti di ricerca come contesto primario:\n{sources_text}\n\n"
-        f"KNOWLEDGE GRAPH (AFFERMAZIONI PASSATE DEL BLOG): {past_claims}\n"
+        f"Scrivi un coinvolgente articolo di blog su come preparare la ricetta: '{topic}'.\n\n"
+        f"=== CONTESTO RAG UFFICIALE (Knowledge Graph + Vector DB locale) ===\n"
+        f"{contesto_rag}\n"
+        f"===================================================================\n\n"
+        f"Usa questi frammenti di ricerca web come integrazione secondaria:\n{sources_text}\n\n"
+        f"KNOWLEDGE GRAPH (AFFERMAZIONI PASSATE DEL BLOG): {past_claims}\n\n"
         f"REGOLE FONDAMENTALI (PENA IL RIFIUTO DELLO SCRITTO):\n"
-        f"1. L'articolo deve parlare ESCLUSIVAMENTE di UNA SOLA RICETTA. Se i frammenti mescolano più ricette, SCEGLINE SOLO UNA (quella inerente a '{topic}') e IGNORA tutto il resto. Vieta categoricamente di mischiare preparazioni diverse.\n"
+        f"1. DEVI rispettare tassativamente gli ingredienti obbligatori e le tecniche indicati nel 'CONTESTO RAG UFFICIALE'.\n"
         f"2. Inizia la tua risposta ESATTAMENTE con 'TITOLO: <il tuo titolo accattivante>' sulla primissima riga.\n"
         f"3. L'articolo deve essere in italiano.\n"
         f"4. Assicurati che l'articolo sia COERENTE (consistency) con le affermazioni passate. Non contraddirle.\n"
