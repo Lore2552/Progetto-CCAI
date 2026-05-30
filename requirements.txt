@@ -11,3 +11,5 @@ duckduckgo-search
 neo4j
 requests
 beautifulsoup4
+rank-bm25
+cohere
