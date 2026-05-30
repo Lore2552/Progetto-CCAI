@@ -15,6 +15,9 @@ from langchain_core.tools import tool
 import requests
 from bs4 import BeautifulSoup
 import datetime
+from collections import defaultdict
+from rank_bm25 import BM25Okapi
+import cohere
 
 load_dotenv()
 
@@ -37,6 +40,9 @@ collection_posts = chroma_client.get_or_create_collection(name="archivio_posts")
 
 KG_FILE = "knowledge_graph.graphml"
 
+cohere_api_key = os.environ.get("COHERE_API_KEY")
+co = cohere.Client(api_key=cohere_api_key) if cohere_api_key else None
+
 
 # ==========================================
 # 1. DEFINIZIONE DELLO STATO
@@ -55,26 +61,99 @@ class AgentState(TypedDict):
     rejected_topics: List[str]
     reasoning_trace: List[str]
 
-    # ==========================================
 
-
+# ==========================================
 # 2. DEFINIZIONE DEI NODI (AGENTI)
 # ==========================================
 
 
+def rrf_fusion(
+    dense_results: list, keyword_results: list, k: int = 60, top_n: int = 10
+) -> list:
+    """Combina i risultati di Dense Retrieval e Keyword Search usando il Reciprocal Rank Fusion (RRF)."""
+    rrf_scores = defaultdict(float)
+    doc_map = {}
+
+    for rank, doc in enumerate(dense_results):
+        doc_id = doc["id"]
+        doc_map[doc_id] = doc
+        rrf_scores[doc_id] += 1.0 / (k + (rank + 1))
+
+    for rank, doc in enumerate(keyword_results):
+        doc_id = doc["id"]
+        doc_map[doc_id] = doc
+        rrf_scores[doc_id] += 1.0 / (k + (rank + 1))
+
+    sorted_docs = sorted(rrf_scores.keys(), key=lambda x: rrf_scores[x], reverse=True)
+    return [doc_map[doc_id] for doc_id in sorted_docs[:top_n]]
+
+
+def cohere_reranker(query: str, documents: list, top_n: int = 3) -> list:
+    """Reranker reale che utilizza le API di Cohere (modello Multilingual v3)."""
+    if not documents:
+        return []
+
+    # Controllo di sicurezza se l'API key non è configurata
+    if not co:
+        print(
+            "      [Reranker WARNING] Client Cohere non inizializzato (API Key mancante). Salto il reranking."
+        )
+        return documents[:top_n]
+
+    print(
+        f"      [Reranker] Esecuzione Reranking API (Cohere v3) su {len(documents)} documenti..."
+    )
+
+    # Estraiamo solo i testi da inviare all'API
+    texts = [doc["text"] for doc in documents]
+
+    try:
+        # Chiamata API a Cohere
+        response = co.rerank(
+            model="rerank-v3.5",  # Usiamo l'ultima versione stabile v3.5 (o 'rerank-multilingual-v3.0')
+            query=query,
+            documents=texts,
+            top_n=top_n,
+        )
+
+        final_documents = []
+        # Cohere restituisce gli indici ordinati per rilevanza descrescente
+        for result in response.results:
+            orig_idx = result.index
+            matched_doc = documents[orig_idx]
+            # Salviamo lo score di rilevanza restituito da Cohere per tracciabilità
+            matched_doc["rerank_score"] = result.relevance_score
+            final_documents.append(matched_doc)
+
+        return final_documents
+
+    except Exception as e:
+        print(
+            f"      [Reranker ERRORE] Chiamata fallita a Cohere: {e}. Fallback sui primi {top_n} risultati RRF."
+        )
+        # Fallback difensivo: se l'API va in crash (es. timeout o rate limit), non blocchiamo l'applicazione
+        return documents[:top_n]
+
+
 @tool
 def kg_rag_tool(topic: str) -> str:
-    """
-    Usa questo tool per ottenere il contesto completo di una ricetta combinando dati strutturati (Knowledge Graph) e testi estesi (Vector Database).
-    Fornisce gli ingredienti obbligatori, le tecniche e i passaggi di preparazione dettagliati.
-    """
-    print(f"      [KG-RAG Tool] Avvio recupero ibrido per la ricetta: '{topic}'...")
+    """Usa questo tool per ottenere il contesto completo di una ricetta combinando dati strutturati (Knowledge Graph)
 
+    e testi estesi (Vector Database) con tecniche avanzate di Hybrid Search (Dense + BM25), Fusione RRF e Cohere Reranking.
+    """
+    print(
+        f"      [KG-RAG Tool] Avvio recupero ibrido avanzato per la ricetta: '{topic}'..."
+    )
+
+    # -------------------------------------------------------------------------
+    # 1. QUERY RECIPE KG (Incluso URL)
+    # -------------------------------------------------------------------------
     cypher_query = """
     MATCH (r:Recipe {title: $topic})
     OPTIONAL MATCH (r)-[:USES_INGREDIENT]->(i:Ingredient)
     OPTIONAL MATCH (r)-[:USES_TECHNIQUE]->(t:Technique)
     RETURN r.title AS recipe, 
+           r.url AS url,
            collect(DISTINCT i.name) AS ingredients, 
            collect(DISTINCT t.name) AS techniques
     """
@@ -86,13 +165,16 @@ def kg_rag_tool(topic: str) -> str:
 
     ingredienti_str = ""
     tecniche_str = ""
+    recipe_url = "Non disponibile"
     expanded_query = topic
 
     if risultato and risultato[0]["recipe"] is not None:
         dati = risultato[0]
         ingredienti_str = ", ".join(dati["ingredients"])
         tecniche_str = ", ".join(dati["techniques"])
+        recipe_url = dati.get("url", "Non disponibile")
 
+        # 2. QUERY EXPANSION
         expanded_query = f"{topic} {ingredienti_str} {tecniche_str}".strip()
         print(
             f"      [KG-RAG Tool] Trovate info nel KG. Query espansa: '{expanded_query}'"
@@ -102,33 +184,95 @@ def kg_rag_tool(topic: str) -> str:
             "      [KG-RAG Tool] Nessuna informazione strutturata trovata nel KG. Uso la query base."
         )
 
+    # Recupero dei documenti del corpus per BM25
     try:
-        risultati_chroma = collection_ricette.query(
-            query_texts=[expanded_query], n_results=3
-        )
-        testo_recuperato = ""
+        tutti_i_doc = collection_ricette.get()
+        all_documents = tutti_i_doc.get("documents", [])
+        all_ids = tutti_i_doc.get("ids", [])
+    except Exception as e:
+        print(f"Errore recupero documenti complessivi per BM25: {e}")
+        all_documents, all_ids = [], []
 
-        if (
-            risultati_chroma
-            and risultati_chroma.get("documents")
-            and risultati_chroma["documents"][0]
-        ):
-            documenti = risultati_chroma["documents"][0]
+    testo_recuperato = ""
+
+    if all_documents:
+        # -------------------------------------------------------------------------
+        # 3. DENSE RETRIEVAL SU CHROMA (Chiediamo i top 10)
+        # -------------------------------------------------------------------------
+        dense_docs = []
+        try:
+            risultati_chroma = collection_ricette.query(
+                query_texts=[expanded_query], n_results=10
+            )
+            if (
+                risultati_chroma
+                and risultati_chroma.get("documents")
+                and risultati_chroma["documents"][0]
+            ):
+                for idx, doc_text in enumerate(risultati_chroma["documents"][0]):
+                    dense_docs.append(
+                        {
+                            "id": risultati_chroma["ids"][0][idx],
+                            "text": doc_text[:2000],
+                        }
+                    )
+        except Exception as e:
+            print(f"Errore durante la ricerca Dense in ChromaDB: {e}")
+
+        # -------------------------------------------------------------------------
+        # 4. KEYWORD SEARCH (BM25 - Chiediamo i top 10)
+        # -------------------------------------------------------------------------
+        keyword_docs = []
+        try:
+            tokenized_corpus = [doc.lower().split(" ") for doc in all_documents]
+            bm25 = BM25Okapi(tokenized_corpus)
+            tokenized_query = expanded_query.lower().split(" ")
+
+            doc_scores = bm25.get_scores(tokenized_query)
+            top_indices = sorted(
+                range(len(doc_scores)), key=lambda i: doc_scores[i], reverse=True
+            )[:10]
+
+            for idx in top_indices:
+                if doc_scores[idx] > 0:
+                    keyword_docs.append(
+                        {"id": all_ids[idx], "text": all_documents[idx][:2000]}
+                    )
+        except Exception as e:
+            print(f"Errore durante la ricerca Keyword (BM25): {e}")
+
+        # -------------------------------------------------------------------------
+        # 5. FUSIONE RISULTATI (RRF) -> Ne estraiamo un massimo di 10 unificati
+        # -------------------------------------------------------------------------
+        fused_docs = rrf_fusion(
+            dense_results=dense_docs, keyword_results=keyword_docs, k=60, top_n=10
+        )
+
+        # -------------------------------------------------------------------------
+        # 6. COHERE RERANKING -> Dai 10 fusi estraiamo i 3 definitivi più rilevanti
+        # -------------------------------------------------------------------------
+        final_docs = cohere_reranker(
+            query=expanded_query, documents=fused_docs, top_n=3
+        )
+
+        if final_docs:
             testo_recuperato = "\n\n--- FRAMMENTO VETTORIALE ---\n".join(
-                [doc[:2000] for doc in documenti]
+                [doc["text"] for doc in final_docs]
             )
         else:
-            testo_recuperato = (
-                "Nessun documento testuale di supporto trovato nel database locale."
-            )
-    except Exception as e:
-        testo_recuperato = f"Errore durante la ricerca in ChromaDB: {e}"
+            testo_recuperato = "Nessun documento testuale di supporto trovato dopo il processo di filtraggio avanzato."
+    else:
+        testo_recuperato = "Database dei documenti vuoto."
 
-    risposta_tool = f"RISULTATI DEL RECUPERO KG-RAG PER '{topic}':\n\n"
+    # -------------------------------------------------------------------------
+    # 7. PROMPT RAG
+    # -------------------------------------------------------------------------
+    risposta_tool = f"RISULTATI DEL RECUPERO IBRIDO AVANZATO PER '{topic}':\n\n"
     risposta_tool += f"[1] DATI STRUTTURATI (REGOLE TASSATIVE DAL KNOWLEDGE GRAPH):\n"
+    risposta_tool += f"- URL Ricetta: {recipe_url}\n"
     risposta_tool += f"- Ingredienti Obbligatori: {ingredienti_str if ingredienti_str else 'Nessuno specificato'}\n"
     risposta_tool += f"- Tecniche Richieste: {tecniche_str if tecniche_str else 'Nessuna specificata'}\n\n"
-    risposta_tool += f"[2] TESTI DETTAGLIATI (DAL VECTOR DATABASE):\n"
+    risposta_tool += f"[2] TESTI DETTAGLIATI (COHERE RERANKED MULTILINGUAL):\n"
     risposta_tool += testo_recuperato
 
     return risposta_tool
@@ -676,7 +820,7 @@ def aggiorna_knowledge_graph_db(topic: str, draft: str, source_urls: List[str]) 
 
 
 def kg_updater(state: AgentState) -> dict:
-    print("-> Esecuzione KG Updater & Web Publisher (tramite ReAct)...")
+    print("-> Esecuzione KG Updater...")
     topic = state["current_topic"]
     sources = state.get("verified_resources", [])
     draft = state["draft"]
@@ -721,33 +865,6 @@ def kg_updater(state: AgentState) -> dict:
 
     except Exception as e:
         print(f"   [KG ReAct] Errore nell'esecuzione dell'agente Neo4j: {e}")
-
-    html_path = "index.html"
-    if os.path.exists(html_path):
-        with open(html_path, "r", encoding="utf-8") as f:
-            html_content = f.read()
-
-        date_str = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
-        formatted_draft = state["draft"].replace("\n", "<br>")
-
-        new_post_html = f"""
-        <article class="post-card">
-            <h2 class="post-title">👨‍🍳 {topic}</h2>
-            <div class="post-meta">Pubblicato il {date_str}</div>
-            <div class="post-content">
-                {formatted_draft}
-            </div>
-            <div class="post-tags">
-                <span class="tag">AI Generated</span>
-                <span class="tag">Cucina Italiana</span>
-            </div>
-        </article>
-        """
-
-        html_content = html_content.replace("<!-- NEW_POSTS_HERE -->", new_post_html)
-        with open(html_path, "w", encoding="utf-8") as f:
-            f.write(html_content)
-        print("   [Web Publisher] Post aggiunto al file index.html!")
 
     return {"status": "kg_updated", "kg_context": "Neo4j_Active"}
 
