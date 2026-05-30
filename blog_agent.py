@@ -629,9 +629,6 @@ def aggiorna_knowledge_graph_db(topic: str, draft: str, source_urls: List[str]) 
     MERGE (t:Topic {name: $topic})
     CREATE (p:Post {id: $post_id})
     MERGE (p)-[:COVERS_TOPIC]->(t)
-    WITH t, p
-    MATCH (old:Topic) WHERE old.name <> $topic
-    WITH t, p, old ORDER BY old.name DESC LIMIT 1
     """
 
     graph_db.query(cypher_post, params={"topic": topic, "post_id": post_id})
