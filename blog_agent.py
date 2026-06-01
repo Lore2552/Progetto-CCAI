@@ -209,7 +209,7 @@ def kg_rag_tool(topic: str) -> str:
         dense_docs = []
         try:
             risultati_chroma = collection_ricette.query(
-                query_texts=[expanded_query], n_results=10
+                query_texts=[expanded_query], n_results=20
             )
             if (
                 risultati_chroma
@@ -238,7 +238,7 @@ def kg_rag_tool(topic: str) -> str:
             doc_scores = bm25.get_scores(tokenized_query)
             top_indices = sorted(
                 range(len(doc_scores)), key=lambda i: doc_scores[i], reverse=True
-            )[:10]
+            )[:20]
 
             for idx in top_indices:
                 if doc_scores[idx] > 0:
@@ -252,14 +252,14 @@ def kg_rag_tool(topic: str) -> str:
         # 5. FUSIONE RISULTATI (RRF) -> Ne estraiamo un massimo di 10 unificati
         # -------------------------------------------------------------------------
         fused_docs = rrf_fusion(
-            dense_results=dense_docs, keyword_results=keyword_docs, k=60, top_n=10
+            dense_results=dense_docs, keyword_results=keyword_docs, k=60, top_n=20
         )
 
         # -------------------------------------------------------------------------
         # 6. COHERE RERANKING -> Dai 10 fusi estraiamo i 3 definitivi più rilevanti
         # -------------------------------------------------------------------------
         final_docs = cohere_reranker(
-            query=expanded_query, documents=fused_docs, top_n=3
+            query=expanded_query, documents=fused_docs, top_n=10
         )
 
         if final_docs:
