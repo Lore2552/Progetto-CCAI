@@ -135,12 +135,17 @@ def cohere_reranker(query: str, documents: list, top_n: int = 3) -> list:
         return documents[:top_n]
 
 
+_LAST_KG_RAG_RESULT = {}
+
+
 @tool
 def kg_rag_tool(topic: str) -> str:
     """Usa questo tool per ottenere il contesto completo di una ricetta combinando dati strutturati (Knowledge Graph)
 
     e testi estesi (Vector Database) con tecniche avanzate di Hybrid Search (Dense + BM25), Fusione RRF e Cohere Reranking.
     """
+    _LAST_KG_RAG_RESULT.clear()  # Svuoto il dizionario delle interazioni precedenti per evitare leak
+
     print(
         f"      [KG-RAG Tool] Avvio recupero ibrido avanzato per la ricetta: '{topic}'..."
     )
@@ -149,7 +154,8 @@ def kg_rag_tool(topic: str) -> str:
     # 1. QUERY RECIPE KG (Incluso URL)
     # -------------------------------------------------------------------------
     cypher_query = """
-    MATCH (r:Recipe {title: $topic})
+    MATCH (r:Recipe)
+    WHERE $topic CONTAINS r.title OR r.title CONTAINS $topic
     OPTIONAL MATCH (r)-[:USES_INGREDIENT]->(i:Ingredient)
     OPTIONAL MATCH (r)-[:USES_TECHNIQUE]->(t:Technique)
     RETURN r.title AS recipe, 
@@ -291,7 +297,7 @@ def kg_rag_tool(topic: str) -> str:
     risposta_tool += f"[2] TESTI DETTAGLIATI (COHERE RERANKED MULTILINGUAL):\n"
     risposta_tool += testo_recuperato
 
-    return {
+    _LAST_KG_RAG_RESULT["risultato"] = {
         "risposta_finale": risposta_tool,
         "testo_recuperato": testo_recuperato,
         "documenti_recuperati": documenti_recuperati,
@@ -303,28 +309,32 @@ def kg_rag_tool(topic: str) -> str:
         },
     }
 
+    return risposta_tool
+
 
 @tool
-def valuta_documento_locale(
-    risultato_kg_rag: Dict[str, Any], target_topic: str
-) -> Dict[str, Any]:
-    """Valuta in modo critico se i testi delle ricette recuperate sono PERTINENTI rispetto al target_topic richiesto."""
+def valuta_documento_locale(target_topic: str) -> str:
+    """Valuta in modo critico se i testi delle ricette recuperate nel database locale sono PERTINENTI rispetto al target_topic richiesto."""
 
     print(
         f"      [Fact Checker Tool] Valutazione documenti rispetto al target: '{target_topic}'..."
     )
 
+    risultato_kg_rag = _LAST_KG_RAG_RESULT.get("risultato", {})
     documenti_recuperati = risultato_kg_rag.get("documenti_recuperati", [])
 
     valutazioni = []
+    documenti_validi = []
 
     if not documenti_recuperati:
-        return {
-            "target_topic": target_topic,
-            "valutazioni": [],
-            "esito_generale": "NO",
-            "messaggio": "Nessun documento recuperato da valutare.",
-        }
+        return json.dumps(
+            {
+                "target_topic": target_topic,
+                "valutazioni": [],
+                "esito_generale": "NO",
+                "messaggio": "Nessun documento recuperato da valutare.",
+            }
+        )
 
     for doc in documenti_recuperati:
         indice = doc.get("indice")
@@ -339,115 +349,200 @@ def valuta_documento_locale(
             f"Il topic esatto da trattare è: '{target_topic}'.\n"
             f"Ecco il testo trovato nel database locale:\n{document_text}\n\n"
             f"Il testo contiene le istruzioni esatte per '{target_topic}'? Rispondi in modo secco: 'SI, COPRE INTERAMENTE', oppure 'PARZIALE' (es. manca una specifica variante), oppure 'NO'."
+            f"CRITICO:Se il testo contiene la preparazione di una ricetta simile ma non esattamente '{target_topic}', rispondi 'PARZIALE'. Se il testo è completamente irrilevante, rispondi 'NO'. Ad esempio, se la ricetta è frittata di asparagi ma noi dobbiamo scrivere un topic per frittata di asparagi con grana padano DOP, è 'PARZIALE'"
         )
 
         try:
             valutazione = llm.invoke([HumanMessage(content=prompt)]).content
         except Exception as e:
-            valutazione = f"Errore valutazione: {e}"
+            valutazione = f"NO (Errore valutazione: {e})"
 
-        valutazioni.append(
-            {
-                "indice": indice,
-                "id": doc_id,
-                "testo_recuperato": document_text,
-                "valutazione": valutazione,
-            }
+        is_valid = "SI" in valutazione.upper() or "PARZIALE" in valutazione.upper()
+
+        dati_valutazione = {
+            "indice": indice,
+            "id": doc_id,
+            "valutazione": valutazione,
+            "status": "ACCETTATO" if is_valid else "SCARTATO",
+        }
+
+        # Inseriamo il testo pesante nel JSON di risposta SOLAMENTE se il documento è utile,
+        # altrimenti lo espungiamo per risparmiare moltissimi token ed evitare distrazioni.
+        if is_valid:
+            dati_valutazione["testo_recuperato"] = document_text
+            documenti_validi.append(doc)
+            valutazioni.append(dati_valutazione)
+
+    # Aggiorniamo _LAST_KG_RAG_RESULT escludendo i documenti inutili ("NO")
+    _LAST_KG_RAG_RESULT["risultato"]["documenti_recuperati"] = documenti_validi
+
+    if documenti_validi:
+        nuovo_testo = "\n\n--- FRAMMENTO VETTORIALE ---\n".join(
+            [
+                f"[DOCUMENTO {doc['indice']} - ID: {doc['id']}]\n{doc['testo']}"
+                for doc in documenti_validi
+            ]
+        )
+    else:
+        nuovo_testo = (
+            "Nessun documento locale pertinente o parziale trovato dopo la validazione."
         )
 
-    return {
-        "target_topic": target_topic,
-        "valutazioni": valutazioni,
-    }
+    _LAST_KG_RAG_RESULT["risultato"]["testo_recuperato"] = nuovo_testo
+
+    if "metadata_kg" in _LAST_KG_RAG_RESULT.get("risultato", {}):
+        meta = _LAST_KG_RAG_RESULT["risultato"]["metadata_kg"]
+        risposta_filtrata = (
+            f"RISULTATI DEL RECUPERO IBRIDO AVANZATO PER '{meta['topic']}':\n\n"
+        )
+        risposta_filtrata += (
+            f"[1] DATI STRUTTURATI (REGOLE TASSATIVE DAL KNOWLEDGE GRAPH):\n"
+        )
+        risposta_filtrata += f"- URL Ricetta: {meta['url']}\n"
+        risposta_filtrata += f"- Ingredienti Obbligatori: {meta['ingredienti'] if meta['ingredienti'] else 'Nessuno specificato'}\n"
+        risposta_filtrata += f"- Tecniche Richieste: {meta['tecniche'] if meta['tecniche'] else 'Nessuna specificata'}\n\n"
+        risposta_filtrata += (
+            f"[2] TESTI DETTAGLIATI (FILTRATI SOLO PER PERTINENZA):\n{nuovo_testo}"
+        )
+
+        _LAST_KG_RAG_RESULT["risultato"]["risposta_finale"] = risposta_filtrata
+
+    return json.dumps(
+        {
+            "target_topic": target_topic,
+            "valutazioni": valutazioni,
+        }
+    )
 
 
 @tool
 def cerca_e_leggi_sul_web(query: str) -> str:
     """Cerca sul web (tramite DuckDuckGo), estrae HTML e restituisce direttamente il testo completo delle pagine trovate senza passare URL json."""
     print(f"      [Web Tool] Eseguo ricerca web e Scraping DIRETTO per: '{query}'...")
-    try:
-        results = ddg_search.results(query, max_results=3)
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
-        }
-        testo_estratto = ""
-        for r in results:
-            url = r["link"]
-            try:
-                resp = requests.get(url, headers=headers, timeout=10)
-                soup = BeautifulSoup(resp.content, "html.parser")
 
-                # Rimuoviamo il rumore di fondo (menu, commenti, ecc.)
-                for unwanted in soup(
-                    [
-                        "nav",
-                        "header",
-                        "footer",
-                        "script",
-                        "style",
-                        "aside",
-                        "form",
-                        "meta",
-                        "noscript",
-                    ]
-                ):
-                    unwanted.extract()
+    # Blocca siti chiaramente non pertinenti con la preparazione di ricette e siti che richiedono login
+    banned_domains = [
+        "wikipedia.org",
+        "youtube.com",
+        "facebook.com",
+        "instagram.com",
+        "twitter.com",
+        "tiktok.com",
+        "pinterest.com",
+        "amazon.",
+        "ebay.",
+    ]
 
-                # Rimuoviamo blocchi spesso contenti rumore (sidebar, widgets, commenti)
-                for unwanted in soup.find_all(
-                    lambda tag: tag.has_attr("class")
-                    and any(
-                        c in str(tag["class"]).lower()
-                        for c in [
-                            "comment",
-                            "sidebar",
-                            "widget",
-                            "menu",
-                            "social",
-                            "share",
+    # Riprova massimo 3 volte se non si estrae niente
+    for attempt in range(3):
+        # Nel caso di retry, variamo leggermente la query per ottenere risultati diversi
+        current_query = (
+            query
+            if attempt == 0
+            else f"{query} ricetta -video -wikipedia (attempt {attempt+1})"
+        )
+
+        try:
+            results = ddg_search.results(
+                current_query, max_results=5
+            )  # Aumentato a 5 per avere più margine di scarto
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+            testo_estratto = ""
+
+            for r in results:
+                url = r["link"]
+
+                # Check banned domains
+                if any(domain in url.lower() for domain in banned_domains):
+                    continue
+
+                try:
+                    resp = requests.get(url, headers=headers, timeout=10)
+                    soup = BeautifulSoup(resp.content, "html.parser")
+
+                    # Rimuoviamo il rumore di fondo (menu, commenti, ecc.)
+                    for unwanted in soup(
+                        [
+                            "nav",
+                            "header",
+                            "footer",
+                            "script",
+                            "style",
+                            "aside",
+                            "form",
+                            "meta",
+                            "noscript",
+                        ]
+                    ):
+                        unwanted.extract()
+
+                    # Rimuoviamo blocchi spesso contenti rumore (sidebar, widgets, commenti)
+                    for unwanted in soup.find_all(
+                        lambda tag: tag.has_attr("class")
+                        and any(
+                            c in str(tag["class"]).lower()
+                            for c in [
+                                "comment",
+                                "sidebar",
+                                "widget",
+                                "menu",
+                                "social",
+                                "share",
+                            ]
+                        )
+                    ):
+                        unwanted.extract()
+                    for unwanted in soup.find_all(
+                        lambda tag: tag.has_attr("id")
+                        and any(
+                            i in str(tag["id"]).lower()
+                            for i in ["comment", "sidebar", "widget", "menu"]
+                        )
+                    ):
+                        unwanted.extract()
+
+                    # Tentiamo di isolare il contenuto principale
+                    main_content = (
+                        soup.find("article")
+                        or soup.find("main")
+                        or soup.find(
+                            "div", class_=lambda c: c and "content" in str(c).lower()
+                        )
+                        or soup.find("body")
+                        or soup
+                    )
+
+                    # Estraiamo il testo dividendo col newline e ripulendo gli spazi multipli
+                    testo_sporco = main_content.get_text(separator="\n", strip=True)
+                    testo_pulito = "\n".join(
+                        [
+                            line.strip()
+                            for line in testo_sporco.splitlines()
+                            if line.strip()
                         ]
                     )
-                ):
-                    unwanted.extract()
-                for unwanted in soup.find_all(
-                    lambda tag: tag.has_attr("id")
-                    and any(
-                        i in str(tag["id"]).lower()
-                        for i in ["comment", "sidebar", "widget", "menu"]
+
+                    testo_lower = testo_pulito.lower()
+                    ha_keyword_ricetta = any(
+                        k in testo_lower
+                        for k in ["ingredient", "preparazion", "procediment", "dosi"]
                     )
-                ):
-                    unwanted.extract()
 
-                # Tentiamo di isolare il contenuto principale
-                main_content = (
-                    soup.find("article")
-                    or soup.find("main")
-                    or soup.find(
-                        "div", class_=lambda c: c and "content" in str(c).lower()
-                    )
-                    or soup.find("body")
-                    or soup
-                )
+                    if len(testo_pulito) > 600 and ha_keyword_ricetta:
+                        testo_estratto += f"\n--- FONTE PERTINENTE (URL: {url}) ---\n{testo_pulito[:8000]}\n"
+                        break  # Abbiamo trovato una fonte ottima e sufficientemente lunga, possiamo fermarci per evitare overflow
+                except Exception:
+                    pass
 
-                # Estraiamo il testo dividendo col newline e ripulendo gli spazi multipli
-                testo_sporco = main_content.get_text(separator="\n", strip=True)
-                testo_pulito = "\n".join(
-                    [line.strip() for line in testo_sporco.splitlines() if line.strip()]
-                )
+            if testo_estratto:
+                return testo_estratto
 
-                if len(testo_pulito) > 100:
-                    testo_estratto += (
-                        f"\n--- FONTE (URL: {url}) ---\n{testo_pulito[:8000]}\n"
-                    )
-            except Exception:
-                pass
+        except Exception as e:
+            print(f"      [Web Tool] Errore nel tentativo {attempt+1}: {e}")
 
-        if not testo_estratto:
-            return "Non è stato possibile estrarre i contenuti delle pagine."
-        return testo_estratto
-    except Exception as e:
-        print(f"      [Web Tool] Errore: {e}")
-        return "Errore nella ricerca."
+    return "Non è stato possibile estrarre i contenuti delle pagine pertinenti e necessarie per questa ricetta, riprova con una query diversa fornendo più dettagli come ad esempio il sito (es. giallozafferano) o prova nei documenti locali."
 
 
 def topic_planner(state: AgentState) -> dict:
@@ -524,15 +619,17 @@ def resource_researcher(state: AgentState) -> dict:
     prompt = f"""Devi raccogliere dati completi su come si prepara questa ricetta: '{topic}'.
     Hai a disposizione 3 tool per la ricerca:
     1. 'kg_rag_tool': Cerca la ricetta nel database locale ibrido. Restituisce le regole fisse del Knowledge Graph (ingredienti e tecniche obbligatorie) e il frammento di testo completo della ricetta.
-    2. 'valuta_documento_locale': Inviagli il testo appena trovato nel DB e il topic esatto per valutarne la pertinenza oggettiva.
+    2. 'valuta_documento_locale': Usa questo tool (fornendo in input SOLO il parametro 'target_topic') per far valutare oggettivamente i documenti appena recuperati dal DB locale ed escludere automaticamente quelli irrilevanti.
     3. 'cerca_e_leggi_sul_web': Cerca ed estrae integralmente i passaggi da pagine internet. Utilizzalo se la ricetta locale è assente, parziale o per colmare i dettagli mancanti.
 
     Flusso Operativo Richiesto:
     1. REASONING: Inizia ogni azione con 'Thought: ...'
     2. Usa SEMPRE come prima azione il tool 'kg_rag_tool'.
-    3. Valuta tu stesso il risultato ottenuto. Se il testo contiene le istruzioni complete per '{topic}' e rispetta gli ingredienti/tecniche obbligatorie, FERMATI ed esponi tu una sintesi che unisce ingredienti e passaggi di preparazione del piatto in un testo descrittivo.
-    4. Se valuti che mancano dati specifici al topic, o se il tool locale non trova nulla, usa 'cerca_e_leggi_sul_web' per ottenere l'intera ricetta dal web in un colpo solo.
-    5. Alla fine di tutti i controlli, integra ciò che hai ottenuto di buono sia in locale (se pertinente) che sul web. Come TUA risposta FINALE restituisci un unico riassunto descrittivo che contenga chiaramente la lista degli ingredienti (rispettando rigorosamente i dati del Knowledge Graph) e la preparazione. Non inviare json.
+    3. Usa SUBITO il tool 'valuta_documento_locale' (chiamalo SOLO con il parametro target_topic, il testo è già memorizzato dal tool precedente). Se la risposta dice che copre interamente la variante, FERMATI ed esponi tu una sintesi che unisce ingredienti e passaggi di preparazione del piatto in un testo descrittivo.
+    4. Se l'esito della validazione del database locale è 'PARZIALE' perché manca un ingrediente o un dettaglio specifico rispetto al topic (es. hai 'frittata di asparagi' ma il topic è 'frittata di asparagi e parmigiano'), la ricerca sul web deve essere MIRATA a prendere le informazioni mancanti o la ricetta COMPLETA per integrarle.
+    5. Se il tool locale non trova nulla o tutti e sei insoddisfatto, usa 'cerca_e_leggi_sul_web' per ottenere l'intera ricetta. 
+    6. FALLBACK: Se anche dopo le stampe e le ricerche sul server web non si trova nulla di perfettamente completo, procedi prendendo assieme le informazioni e frammenti 'parziali' trovati fino ad ora, assemblando il draft con ciò che hai.
+    7. Alla fine di tutti i controlli, unisci ciò che hai ottenuto di buono sia in locale (se pertinente/parziale) che sul web. Come TUA risposta FINALE restituisci un unico riassunto descrittivo che contenga chiaramente la lista degli ingredienti e la preparazione. Non inviare json.
     """
 
     print("   [ReAct] Avvio l'agente. Attendi l'elaborazione...")
@@ -558,7 +655,12 @@ def resource_researcher(state: AgentState) -> dict:
                 print(f"   [ReAct] {obs_str}\n")
 
         raw = [{"url": "ReAct Synthesis", "content": final_answer, "title": topic}]
-        contesto_rag_effettivo = kg_rag_tool.invoke({"topic": topic})
+
+        # Recuperiamo e passiamo al Drafter il testo locale epurato dai 'NO'
+        contesto_rag_effettivo = _LAST_KG_RAG_RESULT.get("risultato", {}).get(
+            "risposta_finale",
+            "Nessun contesto DB locale o non attivato in modo sufficiente.",
+        )
 
     except Exception as e:
         print(f"   [Errore ReAct Agent] {e}")
@@ -644,6 +746,10 @@ def drafter(state: AgentState) -> dict:
         f"6. Scrivi in modo diretto come se fossi uno chef (VIETATO usare scuse, premesse o frasi come 'ecco l'articolo')."
         f"7. L'articolo deve conterenere necessariamente la lista degli ingredienti della ricetta trattata.\n"
         f"8. L'articolo deve contenere necessariamente la preparazione dettagliata della ricette trattata.\n"
+        f"9. CITAZIONI E GROUNDING OBBLIGATORI (REQUISITO DI PROGETTO CRITICO): Il tuo testo finale deve dimostrare CHIARAMENTE l'uso combinato delle due fonti di conoscenza. Devi applicare due tipi di citazioni in linea:\n"
+        f"   - Quando inserisci un ingrediente obbligatorio o una tecnica dettata dal database a grafi, usa: [Fonte: Knowledge Graph].\n"
+        f"   - Quando descrivi i passaggi pratici, i tempi o i dettagli tratti dai frammenti testuali vettoriali o dal web, usa: [Fonte: URL_O_NOME_DOCUMENTO].\n"
+        f"   Esempio di frase perfetta: 'Aggiungete il guanciale [Fonte: Knowledge Graph] e fatelo rosolare a fuoco lento per circa 10 minuti [Fonte: https://www.sito.it/ricetta]'. L'assenza di questa doppia citazione comporterà il rifiuto assoluto dell'articolo.\n"
     )
 
     if feedback and previous_draft:
