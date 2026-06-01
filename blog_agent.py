@@ -194,6 +194,7 @@ def kg_rag_tool(topic: str) -> str:
         all_documents, all_ids = [], []
 
     testo_recuperato = ""
+    documenti_recuperati = []
 
     if all_documents:
         # -------------------------------------------------------------------------
@@ -256,11 +257,26 @@ def kg_rag_tool(topic: str) -> str:
         )
 
         if final_docs:
+            documenti_recuperati = [
+                {
+                    "id": doc.get("id"),
+                    "testo": doc.get("text", ""),
+                    "indice": idx + 1,
+                }
+                for idx, doc in enumerate(final_docs)
+            ]
+
             testo_recuperato = "\n\n--- FRAMMENTO VETTORIALE ---\n".join(
-                [doc["text"] for doc in final_docs]
+                [
+                    f"[DOCUMENTO {doc['indice']} - ID: {doc['id']}]\n{doc['testo']}"
+                    for doc in documenti_recuperati
+                ]
             )
         else:
-            testo_recuperato = "Nessun documento testuale di supporto trovato dopo il processo di filtraggio avanzato."
+            testo_recuperato = (
+                "Nessun documento testuale di supporto trovato dopo il processo "
+                "di filtraggio avanzato."
+            )
     else:
         testo_recuperato = "Database dei documenti vuoto."
 
@@ -275,24 +291,74 @@ def kg_rag_tool(topic: str) -> str:
     risposta_tool += f"[2] TESTI DETTAGLIATI (COHERE RERANKED MULTILINGUAL):\n"
     risposta_tool += testo_recuperato
 
-    return risposta_tool
+    return {
+        "risposta_finale": risposta_tool,
+        "testo_recuperato": testo_recuperato,
+        "documenti_recuperati": documenti_recuperati,
+        "metadata_kg": {
+            "topic": topic,
+            "url": recipe_url,
+            "ingredienti": ingredienti_str,
+            "tecniche": tecniche_str,
+        },
+    }
 
 
 @tool
-def valuta_documento_locale(document_text: str, target_topic: str) -> str:
-    """Valuta in modo critico se il testo della ricetta fornito è PERTINENTE rispetto al target_topic richiesto."""
+def valuta_documento_locale(
+    risultato_kg_rag: Dict[str, Any], target_topic: str
+) -> Dict[str, Any]:
+    """Valuta in modo critico se i testi delle ricette recuperate sono PERTINENTI rispetto al target_topic richiesto."""
+
     print(
-        f"      [Fact Checker Tool] Valutazione documento rispetto al target: '{target_topic}'..."
+        f"      [Fact Checker Tool] Valutazione documenti rispetto al target: '{target_topic}'..."
     )
-    prompt = (
-        f"Il topic esatto da trattare è: '{target_topic}'.\n"
-        f"Ecco il testo trovato nel database locale:\n{document_text}\n\n"
-        f"Il testo contiene le istruzioni esatte per '{target_topic}'? Rispondi in modo secco: 'SI, COPRE INTERAMENTE', oppure 'PARZIALE' (es. manca una specifica variante), oppure 'NO'."
-    )
-    try:
-        return llm.invoke([HumanMessage(content=prompt)]).content
-    except Exception as e:
-        return f"Errore valutazione: {e}"
+
+    documenti_recuperati = risultato_kg_rag.get("documenti_recuperati", [])
+
+    valutazioni = []
+
+    if not documenti_recuperati:
+        return {
+            "target_topic": target_topic,
+            "valutazioni": [],
+            "esito_generale": "NO",
+            "messaggio": "Nessun documento recuperato da valutare.",
+        }
+
+    for doc in documenti_recuperati:
+        indice = doc.get("indice")
+        doc_id = doc.get("id")
+        document_text = doc.get("testo", "")
+
+        print(
+            f"      [Fact Checker Tool] Valutazione documento {indice} rispetto al target: '{target_topic}'..."
+        )
+
+        prompt = (
+            f"Il topic esatto da trattare è: '{target_topic}'.\n"
+            f"Ecco il testo trovato nel database locale:\n{document_text}\n\n"
+            f"Il testo contiene le istruzioni esatte per '{target_topic}'? Rispondi in modo secco: 'SI, COPRE INTERAMENTE', oppure 'PARZIALE' (es. manca una specifica variante), oppure 'NO'."
+        )
+
+        try:
+            valutazione = llm.invoke([HumanMessage(content=prompt)]).content
+        except Exception as e:
+            valutazione = f"Errore valutazione: {e}"
+
+        valutazioni.append(
+            {
+                "indice": indice,
+                "id": doc_id,
+                "testo_recuperato": document_text,
+                "valutazione": valutazione,
+            }
+        )
+
+    return {
+        "target_topic": target_topic,
+        "valutazioni": valutazioni,
+    }
 
 
 @tool
@@ -456,9 +522,10 @@ def resource_researcher(state: AgentState) -> dict:
     react_agent = create_agent(llm, tools)
 
     prompt = f"""Devi raccogliere dati completi su come si prepara questa ricetta: '{topic}'.
-    Hai a disposizione 2 tool per la ricerca:
+    Hai a disposizione 3 tool per la ricerca:
     1. 'kg_rag_tool': Cerca la ricetta nel database locale ibrido. Restituisce le regole fisse del Knowledge Graph (ingredienti e tecniche obbligatorie) e il frammento di testo completo della ricetta.
-    2. 'cerca_e_leggi_sul_web': Cerca ed estrae integralmente i passaggi da pagine internet. Utilizzalo se la ricetta locale è assente, parziale o per colmare i dettagli mancanti.
+    2. 'valuta_documento_locale': Inviagli il testo appena trovato nel DB e il topic esatto per valutarne la pertinenza oggettiva.
+    3. 'cerca_e_leggi_sul_web': Cerca ed estrae integralmente i passaggi da pagine internet. Utilizzalo se la ricetta locale è assente, parziale o per colmare i dettagli mancanti.
 
     Flusso Operativo Richiesto:
     1. REASONING: Inizia ogni azione con 'Thought: ...'
