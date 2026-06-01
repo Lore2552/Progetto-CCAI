@@ -6,6 +6,7 @@ import re
 import json
 import hashlib
 import os
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # Configurazione ChromaDB
 CHROMA_DB_PATH = "./chroma_db"
@@ -322,20 +323,53 @@ def main():
             ricetta = estrai_ricetta(link)
 
             if ricetta["titolo"] and ricetta["preparazione"]:
-                document = build_document(ricetta)
+
+                titolo = ricetta["titolo"]
+                url = ricetta["url"]
+                
+                chunks_finali = []
+                chunk_metadatas = []
+                chunk_ids = []
+
+                ingredienti_testo = "\n".join(f"- {ing}" for ing in ricetta["ingredienti"])
+                chunk_ing = f"TITOLO: {titolo}\nINGREDIENTI:\n{ingredienti_testo}"
+                
+                chunks_finali.append(chunk_ing)
+                chunk_metadatas.append({
+                    "titolo": titolo, 
+                    "url": url, 
+                    "doc_type": "ingredienti",
+                    "parent_id": ricetta_id
+                })
+                chunk_ids.append(f"{ricetta_id}_ing")
+
+                text_splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=1000,
+                    chunk_overlap=200,
+                    separators=["\n\n", "\n", ".", " ", ""]
+                )
+
+                prep_chunks = text_splitter.split_text(ricetta["preparazione"])
+
+                for i, p_chunk in enumerate(prep_chunks):
+                    chunk_testo = f"TITOLO: {titolo} (Parte {i+1})\nPREPARAZIONE:\n{p_chunk}"
+                    
+                    chunks_finali.append(chunk_testo)
+                    chunk_metadatas.append({
+                        "titolo": titolo, 
+                        "url": url, 
+                        "doc_type": "preparazione",
+                        "chunk_index": i,
+                        "parent_id": ricetta_id
+                    })
+                    chunk_ids.append(f"{ricetta_id}_prep_{i}")
+
+                
 
                 chroma_collection.add(
-                    documents=[document],
-                    metadatas=[
-                        {
-                            "titolo": ricetta["titolo"],
-                            "url": ricetta["url"],
-                            "source": "giallozafferano",
-                            "doc_type": "recipe",
-                            "num_ingredienti": len(ricetta["ingredienti"]),
-                        }
-                    ],
-                    ids=[ricetta_id],
+                    documents=chunks_finali,
+                    metadatas=chunk_metadatas,
+                    ids=chunk_ids,
                 )
 
                 existing_ids.add(ricetta_id)
