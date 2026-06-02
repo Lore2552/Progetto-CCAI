@@ -10,6 +10,7 @@ langchain_neo4j
 duckduckgo-search
 neo4j
 requests
-beautifulsoup4
+#beautifulsoup4
 rank-bm25
 cohere
+trafilatura
