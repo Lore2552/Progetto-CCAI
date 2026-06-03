@@ -13,6 +13,7 @@ from langchain_community.utilities import DuckDuckGoSearchAPIWrapper
 from langchain_neo4j import Neo4jGraph
 from langchain_core.tools import tool
 import requests
+import re
 
 # from bs4 import BeautifulSoup
 import trafilatura
@@ -595,6 +596,8 @@ def cerca_sul_web(query: str) -> str:
         return json.dumps([])
 """
 
+import re
+
 
 def resource_researcher(state: AgentState) -> dict:
     topic = state["current_topic"]
@@ -649,33 +652,42 @@ def resource_researcher(state: AgentState) -> dict:
                 trace.append(obs_str)
                 print(f"   [ReAct] {obs_str}\n")
 
-        # --- CONTROLLO TELEMETRIA TOOL PER VERIFICA SITO WEB ---
         ha_usato_il_web = False
+        url_da_tool = []
+
         for msg in response.get("messages", []):
-            if (
-                getattr(msg, "type", "") == "tool"
-                and getattr(msg, "name", "") == "cerca_e_leggi_sul_web"
-            ):
-                ha_usato_il_web = True
             if hasattr(msg, "tool_calls") and msg.tool_calls:
                 for tc in msg.tool_calls:
                     if tc.get("name") == "cerca_e_leggi_sul_web":
                         ha_usato_il_web = True
 
-        # Assegnazione dinamica dell'URL reale
+            if getattr(msg, "type", "") == "tool":
+                for line in str(msg.content).split("\n"):
+                    if "URL_FONTE:" in line:
+                        url_da_tool.append(line.split("URL_FONTE:")[1].strip())
+
         url_scelto = "DB_Locale"
         if ha_usato_il_web:
             url_scelto = "Nessun URL trovato"
+
             for line in final_answer.split("\n"):
-                if "URL_SELEZIONATO:" in line.upper():
-                    url_scelto = line.split(":", 1)[1].strip()
-        else:
-            url_scelto = "DB_Locale"
-        # ------------------------------------------------------
+                clean_line = line.replace("**", "").replace("*", "")
+                if "URL_SELEZIONATO:" in clean_line.upper():
+                    parti = re.split(r"(?i)URL_SELEZIONATO:", clean_line)
+                    if len(parti) > 1:
+                        url_scelto = parti[1].strip()
+                        break
+
+            if url_scelto == "Nessun URL trovato":
+                links_nel_testo = re.findall(r"(https?://[^\s]+)", final_answer)
+                if links_nel_testo:
+                    url_scelto = links_nel_testo[-1]
+
+            if url_scelto == "Nessun URL trovato" and url_da_tool:
+                url_scelto = url_da_tool[0]
 
         raw = [{"url": url_scelto, "content": final_answer, "title": topic}]
 
-        # Recuperiamo il testo locale epurato dai 'NO'
         contesto_rag_effettivo = _LAST_KG_RAG_RESULT.get("risultato", {}).get(
             "risposta_finale",
             "Nessun contesto DB locale o non attivato in modo sufficiente.",
