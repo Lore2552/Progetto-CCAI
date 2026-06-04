@@ -184,15 +184,25 @@ def kg_rag_tool(topic: str) -> str:
     # 1. QUERY RECIPE KG (Incluso URL)
     # -------------------------------------------------------------------------
     cypher_query = """
+    WITH split(toLower($topic), " ") AS parole
     MATCH (r:Recipe)
-    WHERE $topic CONTAINS r.title OR r.title CONTAINS $topic
+    // Filtra le parole vuote o corte (es. "di", "con") per evitare falsi positivi
+    WHERE any(parola IN parole WHERE length(parola) > 3 AND toLower(r.title) CONTAINS parola)
+    
     OPTIONAL MATCH (r)-[:USES_INGREDIENT]->(i:Ingredient)
     OPTIONAL MATCH (r)-[:USES_TECHNIQUE]->(t:Technique)
+    
+    // Calcoliamo quanti token matchano per ordinare la migliore
+    WITH r, i, t, [p IN parole WHERE length(p) > 3 AND toLower(r.title) CONTAINS p] AS matches
     RETURN r.title AS recipe, 
            r.url AS url,
            collect(DISTINCT i.name) AS ingredients, 
-           collect(DISTINCT t.name) AS techniques
+           collect(DISTINCT t.name) AS techniques,
+           size(matches) AS score
+    ORDER BY score DESC
+    LIMIT 1
     """
+
     try:
         risultato = graph_db.query(cypher_query, params={"topic": topic})
     except Exception as e:
