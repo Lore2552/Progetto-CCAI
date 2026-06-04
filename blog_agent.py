@@ -644,7 +644,6 @@ def topic_planner(state: AgentState) -> dict:
                     tipo_nome = piatto.get("tipo", "").strip().capitalize()
                     
                     if ricetta_nome and tipo_nome:
-                        # --- IMPLEMENTAZIONE SHIELD SEMANTICO ---
                         ricetta_lower = ricetta_nome.lower()
                         is_duplicate = False
                         for avoid_item in all_avoids:
@@ -661,11 +660,6 @@ def topic_planner(state: AgentState) -> dict:
                         else:
                             print(f"   [Planner BUG-SHIELD] Scartato duplicato semantico: '{ricetta_nome}'")
 
-                    if ricetta_nome and tipo_nome and (ricetta_nome not in all_avoids):
-                        queue.append({
-                            "tipo": tipo_nome,
-                            "ricetta": ricetta_nome
-                        })
 
         except Exception as e:
             print(f"   [Planner Errore LLM/Parsing JSON] {e}. Imposto fallback d'emergenza.")
