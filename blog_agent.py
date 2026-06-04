@@ -643,6 +643,24 @@ def topic_planner(state: AgentState) -> dict:
                     ricetta_nome = piatto.get("ricetta", "").strip()
                     tipo_nome = piatto.get("tipo", "").strip().capitalize()
                     
+                    if ricetta_nome and tipo_nome:
+                        # --- IMPLEMENTAZIONE SHIELD SEMANTICO ---
+                        ricetta_lower = ricetta_nome.lower()
+                        is_duplicate = False
+                        for avoid_item in all_avoids:
+                            avoid_lower = avoid_item.lower()
+                            if ricetta_lower in avoid_lower or avoid_lower in ricetta_lower:
+                                is_duplicate = True
+                                break
+
+                        if not is_duplicate:
+                            queue.append({"tipo": tipo_nome, "ricetta": ricetta_nome})
+                            all_avoids.append(ricetta_nome)
+                            if tipo_nome in tipi_mancanti:
+                                tipi_mancanti.remove(tipo_nome)
+                        else:
+                            print(f"   [Planner BUG-SHIELD] Scartato duplicato semantico: '{ricetta_nome}'")
+
                     if ricetta_nome and tipo_nome and (ricetta_nome not in all_avoids):
                         queue.append({
                             "tipo": tipo_nome,
@@ -659,6 +677,7 @@ def topic_planner(state: AgentState) -> dict:
                     {"tipo": "Secondo", "ricetta": "Cotoletta alla Milanese"},
                     {"tipo": "Dolce", "ricetta": "Panna Cotta"},
                 ]
+    
 
     # Salva lo stato aggiornato della coda
     save_planning_queue(queue)
