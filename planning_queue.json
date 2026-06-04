@@ -1,14 +1,14 @@
 [
     {
-        "tipo": "Primo",
-        "ricetta": "Tortino di Patate e Salsiccia"
-    },
-    {
         "tipo": "Secondo",
         "ricetta": "Brasato al Barolo"
     },
     {
         "tipo": "Dolce",
         "ricetta": "Panettone"
+    },
+    {
+        "tipo": "Primo",
+        "ricetta": "Tagliatelle alla Bolognese"
     }
 ]

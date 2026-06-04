@@ -186,14 +186,14 @@ def kg_rag_tool(topic: str) -> str:
     cypher_query = """
     WITH split(toLower($topic), " ") AS parole
     MATCH (r:Recipe)
-    // Filtra le parole vuote o corte (es. "di", "con") per evitare falsi positivi
-    WHERE any(parola IN parole WHERE length(parola) > 3 AND toLower(r.title) CONTAINS parola)
+    // Usiamo size() al posto di length() per evitare il conflitto di tipo
+    WHERE any(parola IN parole WHERE size(parola) > 3 AND toLower(r.title) CONTAINS parola)
     
     OPTIONAL MATCH (r)-[:USES_INGREDIENT]->(i:Ingredient)
     OPTIONAL MATCH (r)-[:USES_TECHNIQUE]->(t:Technique)
     
-    // Calcoliamo quanti token matchano per ordinare la migliore
-    WITH r, i, t, [p IN parole WHERE length(p) > 3 AND toLower(r.title) CONTAINS p] AS matches
+    // Calcoliamo il punteggio usando size() anche qui
+    WITH r, i, t, [p IN parole WHERE size(p) > 3 AND toLower(r.title) CONTAINS p] AS matches
     RETURN r.title AS recipe, 
            r.url AS url,
            collect(DISTINCT i.name) AS ingredients, 
