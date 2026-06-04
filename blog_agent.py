@@ -24,16 +24,39 @@ import cohere
 
 load_dotenv()
 
+PLANNING_FILE = "planning_queue.json"
+
 llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.1)
 # llm = ChatOllama(model="llama3.1:8b", temperature=0.5)
 
 ddg_search = DuckDuckGoSearchAPIWrapper(max_results=5)
+
+def load_planning_queue() -> List[Dict[str, str]]:
+    """Carica la coda di pianificazione dal file JSON."""
+    if os.path.exists(PLANNING_FILE):
+        try:
+            with open(PLANNING_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"   [Planner] Errore lettura file di piano: {e}. Ricreo coda.")
+    return []
+
+def save_planning_queue(queue: List[Dict[str, str]]):
+    """Salva la coda di pianificazione su file JSON."""
+    try:
+        with open(PLANNING_FILE, "w", encoding="utf-8") as f:
+            json.dump(queue, f, ensure_ascii=False, indent=4)
+        print(f"   [Planner] Coda di pianificazione aggiornata e salvata su file.")
+    except Exception as e:
+        print(f"   [Planner] Errore nel salvataggio della coda: {e}")
+
 
 graph_db = Neo4jGraph(
     url=os.environ.get("NEO4J_URI"),
     username=os.environ.get("NEO4J_USERNAME"),
     password=os.environ.get("NEO4J_PASSWORD"),
 )
+
 
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
 collection_ricette = chroma_client.get_or_create_collection(
@@ -534,67 +557,125 @@ def cerca_e_leggi_sul_web(query: str) -> str:
 
 
 def topic_planner(state: AgentState) -> dict:
-    print("-> Esecuzione Topic Planner...")
+    print("-> Esecuzione Topic Planner con Coda Persistente (Primo, Secondo, Dolce)...")
 
+    # 1. Recupero degli argomenti passati dal Knowledge Graph per evitarli
     cypher_query = "MATCH (t:Topic) RETURN t.name AS name"
     risultati = graph_db.query(cypher_query)
-
     past_topics = [res["name"] for res in risultati if res.get("name")]
     rejected_topics = state.get("rejected_topics", [])
-
     all_avoids = past_topics + rejected_topics
 
-    print(f"   [KG] Argomenti passati trovati: {past_topics}")
+    print(f"   [KG] Argomenti passati da evitare: {past_topics}")
     if rejected_topics:
         print(f"   [Feedback] Argomenti scartati in questa sessione: {rejected_topics}")
 
-    prompt = (
-        f"La richiesta dell'utente è: '{state['user_request']}'.\n"
-        f"KNOWLEDGE GRAPH (RICETTE GIÀ SCRITTE): {all_avoids}.\n"
-        f"DEVI scegliere una nuova ricetta della cucina italiana COMPLETAMENTE DIVERSA da quelle scritte.\n"
-        f"DIVIETO ASSOLUTO: Non puoi proporre piatti già presenti nella lista dei vietati.\n"
-        f"REQUISITO: Identifica un 'Gap in coverage' (vuoto di copertura) esplorando qualcosa di nuovo.\n"
-        f"REGOLA DI FORMATTAZIONE TASSATIVA: Rispondi SOLO ED ESCLUSIVAMENTE con il NOME DELLA RICETTA. "
-        f"Non aggiungere descrizioni, non aggiungere ingredienti, non scrivere premesse."
-        f"CRITICO: Cerca di scegliere una ricetta che esista veramente, non scegliere ricette troppo specifiche (ad esempio Riso con parmigiano, aragosta e zafferano è troppo specifica) o ricette inesistenti tipo: Torta di Natale di Panettone con Crema di Mascarpone e Frutta Secca. Punta a un livello di specificità medio, ad esempio: Pappardelle al Cinghiale, Risotto alla Milanese, Lasagne alla Bolognese, Melanzane alla Parmigiana, Ossobuco alla Milanese, Spaghetti alle Vongole, Gnocchi al Pesto Genovese, Polenta Taragna con Formaggi, Frittura di Calamari e Gamberi, Zuppa di Pesce alla Livornese."
-        f"Esempio di risposta corretta: Pappardelle al Cinghiale"
-    )
-    try:
-        response = llm.invoke([HumanMessage(content=prompt)]).content
-        planned = (
-            [t.strip() for t in response.split(",")]
-            if "," in response
-            else [response.strip()]
-        )
-    except Exception as e:
-        print(f"   [Errore LLM] {e}")
-        planned = ["Default Topic 1", "Default Topic 2"]
+    # 2. Caricamento della coda persistente da file JSON
+    queue = load_planning_queue()
+    print(f"   [Planner] Coda attuale letta da file: {queue}")
 
-    print(f"   [LLM] Argomenti pianificati: {planned}")
+    current_topic = ""
+
+    if queue:
+        # CASO A: La coda ha elementi. Estraiamo il primo (FIFO)
+        next_item = queue.pop(0)
+        current_topic = next_item["ricetta"]
+        print(f"   [Planner] Consumata ricetta dalla coda: '{current_topic}' ({next_item['tipo']})")
+    else:
+        print("   [Planner] Coda vuota o primo avvio. Generazione intero menu (Primo, Secondo, Dolce)...")
+
+    if current_topic:
+        all_avoids.append(current_topic)
+        
+    # 3. Identificazione delle categorie mancanti (Primo, Secondo, Dolce)
+    tipi_presenti = [item["tipo"] for item in queue]
+    tipi_mancanti = []
+    for tipo in ["Primo", "Secondo", "Dolce"]:
+        if tipo not in tipi_presenti:
+            tipi_mancanti.append(tipo)
+
+    # Evitiamo che l'LLM generi ricette uguali a quelle già ferme in coda
+    for item in queue:
+        all_avoids.append(item["ricetta"])
+
+    # 4. Chiediamo all'LLM di riempire i gap strutturali della coda
+    if tipi_mancanti:
+        print(f"   [Planner] Tipi di piatto da pianificare: {tipi_mancanti}")
+    
+        prompt = (
+            f"La richiesta dell'utente è: '{state['user_request']}'.\n"
+            f"KNOWLEDGE GRAPH (RICETTE DA EVITARE ASSOLUTAMENTE): {all_avoids}.\n"
+            f"Devi generare esattamente una nuova, famosa e autentica ricetta della cucina tradizionale italiana per ciascuna di queste categorie mancanti: {tipi_mancanti}.\n"
+            f"Punta a un livello di specificità medio (es. 'Risotto alla Milanese', 'Saltimbocca alla Romana', 'Tiramisù').\n\n"
+            f"REGOLA DI FORMATTAZIONE TASSATIVA:\n"
+            f"Rispondi SOLO ed esclusivamente con un array JSON valido, senza premesse, commenti o blocchi di testo.\n"
+            f"Ogni oggetto dell'array deve contenere esattamente le chiavi 'tipo' e 'ricetta'.\n"
+            f"Esempio di formato richiesto:\n"
+            f'[\n  {{"tipo": "Primo", "ricetta": "Spaghetti alla Carbonara"}},\n  {{"tipo": "Secondo", "ricetta": "Tagliata di Manzo"}}\n]'
+        )
+
+        try:
+            # CORREZIONE: Invocazione corretta del modello LLM
+            response = llm.invoke([HumanMessage(content=prompt)]).content.strip()
+
+            # Rimozione di eventuali blocchi di codice markdown (```json ... ```)
+            if response.startswith("```"):
+                response = re.sub(r"^```[a-zA-Z]*\n|```$", "", response, flags=re.M).strip()
+
+            # Estrattore difensivo Regex: isola solo l'array JSON valido
+            json_match = re.search(r"\[\s*\{.*\}\s*\]", response, re.DOTALL)
+            if json_match:
+                json_clean = json_match.group(0)
+            else:
+                json_clean = response
+
+            # CORREZIONE: Unica deserializzazione sicura eseguita dopo la pulizia regex
+            nuovi_piatti = json.loads(json_clean)
+            
+            if isinstance(nuovi_piatti, list):
+                # Se siamo al primo avvio (coda vuota), estraiamo subito il primo elemento generato come topic corrente
+                if not current_topic and nuovi_piatti:
+                    primo_estratto = nuovi_piatti.pop(0)
+                    current_topic = primo_estratto["ricetta"]
+                    print(f"   [Planner] Primo avvio: '{current_topic}' impostato come topic corrente.")
+
+                for piatto in nuovi_piatti:
+                    ricetta_nome = piatto.get("ricetta", "").strip()
+                    tipo_nome = piatto.get("tipo", "").strip().capitalize()
+                    
+                    if ricetta_nome and tipo_nome and (ricetta_nome not in all_avoids):
+                        queue.append({
+                            "tipo": tipo_nome,
+                            "ricetta": ricetta_nome
+                        })
+
+        except Exception as e:
+            print(f"   [Planner Errore LLM/Parsing JSON] {e}. Imposto fallback d'emergenza.")
+            # Fallback d'emergenza se l'LLM sbaglia il JSON o va in timeout
+            if not current_topic:
+                current_topic = "Spaghetti alla Carbonara"
+            if not queue:
+                queue = [
+                    {"tipo": "Secondo", "ricetta": "Cotoletta alla Milanese"},
+                    {"tipo": "Dolce", "ricetta": "Panna Cotta"},
+                ]
+
+    # Salva lo stato aggiornato della coda
+    save_planning_queue(queue)
+
+    # Estraiamo una lista piatta di stringhe per lo stato di LangGraph
+    planned_list = [item["ricetta"] for item in queue]
+
+    print(f"   [Planner] Topic Corrente in lavorazione: '{current_topic}'")
+    print(f"   [Planner] Prossimi in coda per le prossime volte: {planned_list}")
+
     return {
-        "planned_topics": planned,
-        "current_topic": planned[0],
+        "planned_topics": planned_list,
+        "current_topic": current_topic,
         "status": "planning_done",
     }
 
 
-""" Vecchia funzione di ricerca
-@tool
-def cerca_sul_web(query: str) -> str:
-    print(f"      [Web Tool] Eseguo ricerca web tramite DuckDuckGo per: '{query}'...")
-    try:
-        results = ddg_search.results(query, max_results=6)
-        raw_results = []
-        for r in results:
-            raw_results.append(
-                {"url": r["link"], "snippet": r["snippet"], "title": r["title"]}
-            )
-        print(f"      [Web Tool] Trovati {len(raw_results)} risultati raw.")
-        return json.dumps(raw_results)
-    except Exception as e:
-        print(f"      [Web Tool] Errore: {e}")
-        return json.dumps([])
-"""
 
 import re
 
@@ -619,10 +700,9 @@ def resource_researcher(state: AgentState) -> dict:
     2. Usa SEMPRE come prima azione il tool 'kg_rag_tool'.
     3. Usa SUBITO il tool 'valuta_documento_locale' (chiamalo SOLO con il parametro target_topic, il testo è già memorizzato dal tool precedente). Se la risposta dice che copre interamente la variante, FERMATI ed esponi tu una sintesi che unisce ingredienti e passaggi di preparazione del piatto in un testo descrittivo.
     4. Se l'esito della validazione del database locale è 'PARZIALE' perché manca un ingrediente o un dettaglio specifico rispetto al topic, la ricerca sul web deve essere MIRATA a prendere le informazioni mancanti o la ricetta COMPLETA per integrarle.
-    5. Se il tool locale non trova nulla oppure abbiamo informazioni parziali, usa 'cerca_e_leggi_sul_web' per ottenere l'intera ricetta. Questo tool andrà a restituire diverse fonti web, devi prendere la più inerente al nostro topic (anche basandoti sul nome della ricetta e gli ingredienti). 
-    6. Scrivi sempre un Thought sulla scelta dell'url più consono tra quelli restituiti dal tool web, spiegando il motivo della scelta (es. "Ho scelto questa fonte perché il titolo della pagina contiene esattamente il nome della ricetta e gli ingredienti chiave richiesti").
-    7. FALLBACK: Se anche dopo le stampe e le ricerche sul server web non si trova nulla di perfettamente completo, procedi prendendo assieme le informazioni e frammenti 'parziali' trovati fino ad ora, assemblando il draft con ciò che hai.
-    8. Alla fine di tutti i controlli, unisci ciò che hai ottenuto di buono sia in locale che sul web. Come TUA risposta FINALE restituisci un unico riassunto descrittivo.
+    5. Se il tool locale non trova nulla o sei insoddisfatto, usa 'cerca_e_leggi_sul_web' per ottenere l'intera ricetta. Questo tool andrà a restituire diverse fonti web, devi prendere la più inerente al nostro topic (anche basandoti sul nome della ricetta e gli ingredienti). 
+    6. FALLBACK: Se anche dopo le stampe e le ricerche sul server web non si trova nulla di perfettamente completo, procedi prendendo assieme le informazioni e frammenti 'parziali' trovati fino ad ora, assemblando il draft con ciò che hai.
+    7. Alla fine di tutti i controlli, unisci ciò che hai ottenuto di buono sia in locale che sul web. Come TUA risposta FINALE restituisci un unico riassunto descrittivo.
 
     REGOLA FONDAMENTALE PER LA RISPOSTA FINALE:
     Se durante l'esecuzione hai usato il tool 'cerca_e_leggi_sul_web', inserisci alla fine del tuo riassunto una riga esatta con l'URL scelto:
@@ -782,9 +862,9 @@ def drafter(state: AgentState) -> dict:
         f"7. L'articolo deve contenere necessariamente la lista degli ingredienti della ricetta trattata.\n"
         f"8. L'articolo deve contenere necessariamente la preparazione dettagliata della ricetta trattata.\n"
         f"9. CITAZIONI IN LINEA OBBLIGATORIE (REQUISITO CRITICO): Il tuo testo finale deve dimostrare chiaramente l'uso combinato delle fonti. Applica queste citazioni nel testo:\n"
-        f"   - Quando inserisci un ingrediente obbligatorio o una tecnica del database locale, usa: [Fonte: DB Locale].\n"
+        f"   - Quando inserisci un ingrediente obbligatorio o una tecnica del database locale, usa: [Fonte: Knowledge Graph].\n"
         f"   - Quando descrivi passaggi pratici, tempi o dettagli presi dal web, usa tassativamente l'URL: [Fonte: {url_fonte}].\n"
-        f"   Esempio: 'Aggiungete il guanciale [Fonte: DB Locale] e fatelo rosolare a fuoco lento per circa 10 minuti [Fonte: {url_fonte}].'\n"
+        f"   Esempio: 'Aggiungete il guanciale [Fonte: Knowledge Graph] e fatelo rosolare a fuoco lento per circa 10 minuti [Fonte: {url_fonte}].'\n"
         f"10. DICITURA FINALE OBBLIGATORIA: Alla fine dell'articolo, lascia una riga vuota e inserisci la fonte globale. "
     )
 

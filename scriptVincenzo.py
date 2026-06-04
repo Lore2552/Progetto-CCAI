@@ -13,7 +13,10 @@ from langchain_community.utilities import DuckDuckGoSearchAPIWrapper
 from langchain_neo4j import Neo4jGraph
 from langchain_core.tools import tool
 import requests
-from bs4 import BeautifulSoup
+import re
+
+# from bs4 import BeautifulSoup
+import trafilatura
 import datetime
 from collections import defaultdict
 from rank_bm25 import BM25Okapi
@@ -21,16 +24,39 @@ import cohere
 
 load_dotenv()
 
+PLANNING_FILE = "planning_queue.json"
+
 llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.1)
 # llm = ChatOllama(model="llama3.1:8b", temperature=0.5)
 
 ddg_search = DuckDuckGoSearchAPIWrapper(max_results=5)
+
+def load_planning_queue() -> List[Dict[str, str]]:
+    """Carica la coda di pianificazione dal file JSON."""
+    if os.path.exists(PLANNING_FILE):
+        try:
+            with open(PLANNING_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"   [Planner] Errore lettura file di piano: {e}. Ricreo coda.")
+    return []
+
+def save_planning_queue(queue: List[Dict[str, str]]):
+    """Salva la coda di pianificazione su file JSON."""
+    try:
+        with open(PLANNING_FILE, "w", encoding="utf-8") as f:
+            json.dump(queue, f, ensure_ascii=False, indent=4)
+        print(f"   [Planner] Coda di pianificazione aggiornata e salvata su file.")
+    except Exception as e:
+        print(f"   [Planner] Errore nel salvataggio della coda: {e}")
+
 
 graph_db = Neo4jGraph(
     url=os.environ.get("NEO4J_URI"),
     username=os.environ.get("NEO4J_USERNAME"),
     password=os.environ.get("NEO4J_PASSWORD"),
 )
+
 
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
 collection_ricette = chroma_client.get_or_create_collection(
@@ -141,7 +167,6 @@ _LAST_KG_RAG_RESULT = {}
 @tool
 def kg_rag_tool(topic: str) -> str:
     """Usa questo tool per ottenere il contesto completo di una ricetta combinando dati strutturati (Knowledge Graph)
-
     e testi estesi (Vector Database) con tecniche avanzate di Hybrid Search (Dense + BM25), Fusione RRF e Cohere Reranking.
     """
     _LAST_KG_RAG_RESULT.clear()  # Svuoto il dizionario delle interazioni precedenti per evitare leak
@@ -190,11 +215,23 @@ def kg_rag_tool(topic: str) -> str:
             "      [KG-RAG Tool] Nessuna informazione strutturata trovata nel KG. Uso la query base."
         )
 
+    # -------------------------------------------------------------------------
+    # STRATEGIA DI LOOKUP PER I METADATI
+    # -------------------------------------------------------------------------
+    id_to_metadata = {}  # Salverà la corrispondenza ID -> Dizionario Metadati
+
     # Recupero dei documenti del corpus per BM25
     try:
         tutti_i_doc = collection_ricette.get()
         all_documents = tutti_i_doc.get("documents", [])
         all_ids = tutti_i_doc.get("ids", [])
+        all_metadatas = tutti_i_doc.get("metadatas", []) or []
+
+        # Popoliamo il lookup con i metadati di tutto il corpus per il BM25
+        for idx, doc_id in enumerate(all_ids):
+            if idx < len(all_metadatas) and all_metadatas[idx]:
+                id_to_metadata[doc_id] = all_metadatas[idx]
+
     except Exception as e:
         print(f"Errore recupero documenti complessivi per BM25: {e}")
         all_documents, all_ids = [], []
@@ -204,7 +241,7 @@ def kg_rag_tool(topic: str) -> str:
 
     if all_documents:
         # -------------------------------------------------------------------------
-        # 3. DENSE RETRIEVAL SU CHROMA (Chiediamo i top 10)
+        # 3. DENSE RETRIEVAL SU CHROMA (Chiediamo i top 20)
         # -------------------------------------------------------------------------
         dense_docs = []
         try:
@@ -216,10 +253,18 @@ def kg_rag_tool(topic: str) -> str:
                 and risultati_chroma.get("documents")
                 and risultati_chroma["documents"][0]
             ):
+                chroma_metas = risultati_chroma.get("metadatas", [[]])[0] or []
+
                 for idx, doc_text in enumerate(risultati_chroma["documents"][0]):
+                    doc_id = risultati_chroma["ids"][0][idx]
+
+                    # Salva nel lookup se i metadati sono presenti nella query dense
+                    if idx < len(chroma_metas) and chroma_metas[idx]:
+                        id_to_metadata[doc_id] = chroma_metas[idx]
+
                     dense_docs.append(
                         {
-                            "id": risultati_chroma["ids"][0][idx],
+                            "id": doc_id,
                             "text": doc_text[:2000],
                         }
                     )
@@ -227,7 +272,7 @@ def kg_rag_tool(topic: str) -> str:
             print(f"Errore durante la ricerca Dense in ChromaDB: {e}")
 
         # -------------------------------------------------------------------------
-        # 4. KEYWORD SEARCH (BM25 - Chiediamo i top 10)
+        # 4. KEYWORD SEARCH (BM25 - Chiediamo i top 20)
         # -------------------------------------------------------------------------
         keyword_docs = []
         try:
@@ -249,25 +294,29 @@ def kg_rag_tool(topic: str) -> str:
             print(f"Errore durante la ricerca Keyword (BM25): {e}")
 
         # -------------------------------------------------------------------------
-        # 5. FUSIONE RISULTATI (RRF) -> Ne estraiamo un massimo di 10 unificati
+        # 5. FUSIONE RISULTATI (RRF)
         # -------------------------------------------------------------------------
         fused_docs = rrf_fusion(
             dense_results=dense_docs, keyword_results=keyword_docs, k=60, top_n=20
         )
 
         # -------------------------------------------------------------------------
-        # 6. COHERE RERANKING -> Dai 10 fusi estraiamo i 3 definitivi più rilevanti
+        # 6. COHERE RERANKING
         # -------------------------------------------------------------------------
         final_docs = cohere_reranker(
             query=expanded_query, documents=fused_docs, top_n=10
         )
 
         if final_docs:
+            # --- MODIFICA CRITICA: Re-iniettiamo la chiave 'metadata' pescando dal lookup ---
             documenti_recuperati = [
                 {
                     "id": doc.get("id"),
                     "testo": doc.get("text", ""),
                     "indice": idx + 1,
+                    "metadata": id_to_metadata.get(
+                        doc.get("id"), {}
+                    ),  # <-- Recupero sicuro del metadato originale
                 }
                 for idx, doc in enumerate(final_docs)
             ]
@@ -279,10 +328,7 @@ def kg_rag_tool(topic: str) -> str:
                 ]
             )
         else:
-            testo_recuperato = (
-                "Nessun documento testuale di supporto trovato dopo il processo "
-                "di filtraggio avanzato."
-            )
+            testo_recuperato = "Nessun documento testuale di supporto trovato dopo il processo di filtraggio avanzato."
     else:
         testo_recuperato = "Database dei documenti vuoto."
 
@@ -300,7 +346,7 @@ def kg_rag_tool(topic: str) -> str:
     _LAST_KG_RAG_RESULT["risultato"] = {
         "risposta_finale": risposta_tool,
         "testo_recuperato": testo_recuperato,
-        "documenti_recuperati": documenti_recuperati,
+        "documenti_recuperati": documenti_recuperati,  # Ora contiene correttamente i metadati
         "metadata_kg": {
             "topic": topic,
             "url": recipe_url,
@@ -320,11 +366,16 @@ def valuta_documento_locale(target_topic: str) -> str:
         f"      [Fact Checker Tool] Valutazione documenti rispetto al target: '{target_topic}'..."
     )
 
-    risultato_kg_rag = _LAST_KG_RAG_RESULT.get("risultato", {})
-    documenti_recuperati = risultato_kg_rag.get("documenti_recuperati", [])
-
+    # 1. INIZIALIZZAZIONE SICURA: Definiamo le variabili all'inizio dello scope.
+    # In questo modo, qualsiasi cosa succeda nel ciclo, Python non darà MAI più un NameError.
+    nuovo_testo = (
+        "Nessun documento locale pertinente o parziale trovato dopo la validazione."
+    )
     valutazioni = []
     documenti_validi = []
+
+    risultato_kg_rag = _LAST_KG_RAG_RESULT.get("risultato", {})
+    documenti_recuperati = risultato_kg_rag.get("documenti_recuperati", [])
 
     if not documenti_recuperati:
         return json.dumps(
@@ -336,50 +387,62 @@ def valuta_documento_locale(target_topic: str) -> str:
             }
         )
 
+    # 2. CICLO DI VALUTAZIONE DEI DOCUMENTI
     for doc in documenti_recuperati:
         indice = doc.get("indice")
         doc_id = doc.get("id")
         document_text = doc.get("testo", "")
 
+        # ESTRAZIONE PULITA DEL TITOLO: Peschiamo direttamente dal dizionario 'metadata'
+        metadata = doc.get("metadata", {})
+        titolo_ricetta_originale = metadata.get("titolo", "Titolo Sconosciuto")
+
         print(
-            f"      [Fact Checker Tool] Valutazione documento {indice} rispetto al target: '{target_topic}'..."
+            f"      [Fact Checker Tool] Valutazione documento {indice} ({titolo_ricetta_originale}) rispetto al target: '{target_topic}'..."
         )
 
-        prompt = (
-            f"Il topic esatto da trattare è: '{target_topic}'.\n"
-            f"Ecco il testo trovato nel database locale:\n{document_text}\n\n"
-            f"Il testo contiene le istruzioni esatte per '{target_topic}'? Rispondi in modo secco: 'SI, COPRE INTERAMENTE', oppure 'PARZIALE' (es. manca una specifica variante), oppure 'NO'."
-            f"CRITICO:Se il testo contiene la preparazione di una ricetta simile ma non esattamente '{target_topic}', rispondi 'PARZIALE'. Se il testo è completamente irrilevante, rispondi 'NO'. Ad esempio, se la ricetta è frittata di asparagi ma noi dobbiamo scrivere un topic per frittata di asparagi con grana padano DOP, è 'PARZIALE'"
-        )
+        prompt = f"""Devi valutare se questo frammento (chunk) estratto dal database locale è utile per scrivere un post su: '{target_topic}'.
+        CONTESTO DEL DOCUMENTO:
+        - Titolo della ricetta originale di appartenenza: "{titolo_ricetta_originale}"
+        - Testo del frammento:
+        {document_text}
+
+        REGOLE DI VALUTAZIONE TASSATIVE:
+        1. CONTROLLO TITOLO (BLOCCANTE): Guarda PRIMA DI TUTTO il "Titolo della ricetta originale". Se descrive un piatto strutturalmente diverso dal target richiesto (es. Target: "Cannoli" -> Titolo Originale: "Treccine"), rispondi "NO". Non importa se il testo contiene ingredienti in comune.
+        2. Rispondi "SI" SE: Il "Titolo originale" corrisponde a '{target_topic}' (comprese le varianti specifiche richieste nel target) E il frammento contiene passaggi o ingredienti di quella ricetta. Trattandosi di un chunk, è normale che contenga solo una parte delle istruzioni; valutalo come "SI" perché appartiene alla ricetta giusta.
+        3. Rispondi "PARZIALE" SE: Il "Titolo originale" è la ricetta BASE del target, ma manca palesemente la variante specifica richiesta (es. Target: "Cannoli ricotta e pistacchio" -> Titolo Originale: "Cannoli alla ricotta"). Il chunk è utile come base, ma incompleto.
+        4. Rispondi "NO" SE: Il frammento è completamente irrilevante o decontestualizzato.
+
+        Rispondi in modo secco iniziando la riga SOLO con la parola "SI", "PARZIALE" o "NO", seguita da un trattino e una brevissima motivazione.
+        """
 
         try:
-            valutazione = llm.invoke([HumanMessage(content=prompt)]).content
+            valutazione = llm.invoke([HumanMessage(content=prompt)]).content.strip()
         except Exception as e:
-            valutazione = f"NO (Errore valutazione: {e})"
+            valutazione = f"NO - (Errore valutazione: {e})"
 
-        is_valid = "SI" in valutazione.upper() or "PARZIALE" in valutazione.upper()
+        val_upper = valutazione.upper()
+        is_valid = val_upper.startswith("SI") or val_upper.startswith("PARZIALE")
 
         dati_valutazione = {
             "indice": indice,
             "id": doc_id,
+            "titolo_originale": titolo_ricetta_originale,
             "valutazione": valutazione,
             "status": "ACCETTATO" if is_valid else "SCARTATO",
         }
 
-        # Inseriamo il testo pesante nel JSON di risposta SOLAMENTE se il documento è utile,
-        # altrimenti lo espungiamo per risparmiare moltissimi token ed evitare distrazioni.
         if is_valid:
-            dati_valutazione["testo_recuperato"] = document_text
             documenti_validi.append(doc)
             valutazioni.append(dati_valutazione)
 
-    # Aggiorniamo _LAST_KG_RAG_RESULT escludendo i documenti inutili ("NO")
+    # 3. ELABORAZIONE FINALE ED AGGIORNAMENTO STATO (FUORI DAL CICLO FOR)
     _LAST_KG_RAG_RESULT["risultato"]["documenti_recuperati"] = documenti_validi
 
     if documenti_validi:
         nuovo_testo = "\n\n--- FRAMMENTO VETTORIALE ---\n".join(
             [
-                f"[DOCUMENTO {doc['indice']} - ID: {doc['id']}]\n{doc['testo']}"
+                f"[DOCUMENTO {doc['indice']} - ID: {doc['id']} - TITOLO ORIGINALE: {doc.get('metadata', {}).get('titolo', 'Sconosciuto')}]\n{doc['testo']}"
                 for doc in documenti_validi
             ]
         )
@@ -392,15 +455,15 @@ def valuta_documento_locale(target_topic: str) -> str:
 
     if "metadata_kg" in _LAST_KG_RAG_RESULT.get("risultato", {}):
         meta = _LAST_KG_RAG_RESULT["risultato"]["metadata_kg"]
-        risposta_filtrata = (
-            f"RISULTATI DEL RECUPERO IBRIDO AVANZATO PER '{meta['topic']}':\n\n"
-        )
+        risposta_filtrata = f"RISULTATI DEL RECUPERO IBRIDO AVANZATO PER '{meta.get('topic', target_topic)}':\n\n"
         risposta_filtrata += (
-            f"[1] DATI STRUTTURATI (REGOLE TASSATIVE DAL KNOWLEDGE GRAPH):\n"
+            "[1] DATI STRUTTURATI (REGOLE TASSATIVE DAL KNOWLEDGE GRAPH):\n"
         )
-        risposta_filtrata += f"- URL Ricetta: {meta['url']}\n"
-        risposta_filtrata += f"- Ingredienti Obbligatori: {meta['ingredienti'] if meta['ingredienti'] else 'Nessuno specificato'}\n"
-        risposta_filtrata += f"- Tecniche Richieste: {meta['tecniche'] if meta['tecniche'] else 'Nessuna specificata'}\n\n"
+        risposta_filtrata += f"- URL Ricetta: {meta.get('url', 'N/A')}\n"
+        risposta_filtrata += f"- Ingredienti Obbligatori: {meta.get('ingredienti', 'Nessuno specificato')}\n"
+        risposta_filtrata += (
+            f"- Tecniche Richieste: {meta.get('tecniche', 'Nessuna specificata')}\n\n"
+        )
         risposta_filtrata += (
             f"[2] TESTI DETTAGLIATI (FILTRATI SOLO PER PERTINENZA):\n{nuovo_testo}"
         )
@@ -417,10 +480,9 @@ def valuta_documento_locale(target_topic: str) -> str:
 
 @tool
 def cerca_e_leggi_sul_web(query: str) -> str:
-    """Cerca sul web (tramite DuckDuckGo), estrae HTML e restituisce direttamente il testo completo delle pagine trovate senza passare URL json."""
+    """Cerca sul web, estrae il main content e restituisce il testo di PIÙ pagine trovate per permettere il confronto."""
     print(f"      [Web Tool] Eseguo ricerca web e Scraping DIRETTO per: '{query}'...")
 
-    # Blocca siti chiaramente non pertinenti con la preparazione di ricette e siti che richiedono login
     banned_domains = [
         "wikipedia.org",
         "youtube.com",
@@ -433,178 +495,190 @@ def cerca_e_leggi_sul_web(query: str) -> str:
         "ebay.",
     ]
 
-    # Riprova massimo 3 volte se non si estrae niente
     for attempt in range(3):
-        # Nel caso di retry, variamo leggermente la query per ottenere risultati diversi
         current_query = (
             query
             if attempt == 0
-            else f"{query} ricetta -video -wikipedia (attempt {attempt+1})"
+            else f"{query} ricetta procedimenti dosi -video -wikipedia (attempt {attempt+1})"
         )
 
         try:
-            results = ddg_search.results(
-                current_query, max_results=5
-            )  # Aumentato a 5 per avere più margine di scarto
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            }
-            testo_estratto = ""
+            results = ddg_search.results(current_query, max_results=5)
+            opzioni_estratte = []
 
             for r in results:
                 url = r["link"]
 
-                # Check banned domains
                 if any(domain in url.lower() for domain in banned_domains):
                     continue
 
                 try:
-                    resp = requests.get(url, headers=headers, timeout=10)
-                    soup = BeautifulSoup(resp.content, "html.parser")
-
-                    # Rimuoviamo il rumore di fondo (menu, commenti, ecc.)
-                    for unwanted in soup(
-                        [
-                            "nav",
-                            "header",
-                            "footer",
-                            "script",
-                            "style",
-                            "aside",
-                            "form",
-                            "meta",
-                            "noscript",
-                        ]
-                    ):
-                        unwanted.extract()
-
-                    # Rimuoviamo blocchi spesso contenti rumore (sidebar, widgets, commenti)
-                    for unwanted in soup.find_all(
-                        lambda tag: tag.has_attr("class")
-                        and any(
-                            c in str(tag["class"]).lower()
-                            for c in [
-                                "comment",
-                                "sidebar",
-                                "widget",
-                                "menu",
-                                "social",
-                                "share",
-                            ]
+                    # Trafilatura scarica ed estrae solo il contenuto principale (articolo/ricetta)
+                    # ignorando menu, footer, commenti e sidebar in automatico.
+                    downloaded = trafilatura.fetch_url(url)
+                    if downloaded:
+                        testo_pulito = trafilatura.extract(
+                            downloaded,
+                            include_comments=False,
+                            include_tables=True,
+                            no_fallback=False,
                         )
-                    ):
-                        unwanted.extract()
-                    for unwanted in soup.find_all(
-                        lambda tag: tag.has_attr("id")
-                        and any(
-                            i in str(tag["id"]).lower()
-                            for i in ["comment", "sidebar", "widget", "menu"]
-                        )
-                    ):
-                        unwanted.extract()
 
-                    # Tentiamo di isolare il contenuto principale
-                    main_content = (
-                        soup.find("article")
-                        or soup.find("main")
-                        or soup.find(
-                            "div", class_=lambda c: c and "content" in str(c).lower()
-                        )
-                        or soup.find("body")
-                        or soup
-                    )
+                        if testo_pulito:
+                            testo_lower = testo_pulito.lower()
+                            ha_keyword_ricetta = any(
+                                k in testo_lower
+                                for k in [
+                                    "ingredient",
+                                    "preparazion",
+                                    "procediment",
+                                    "dosi",
+                                ]
+                            )
 
-                    # Estraiamo il testo dividendo col newline e ripulendo gli spazi multipli
-                    testo_sporco = main_content.get_text(separator="\n", strip=True)
-                    testo_pulito = "\n".join(
-                        [
-                            line.strip()
-                            for line in testo_sporco.splitlines()
-                            if line.strip()
-                        ]
-                    )
+                            if len(testo_pulito) > 500 and ha_keyword_ricetta:
+                                # Salviamo chiaramente l'URL nel testo passato al LLM
+                                testo_formattato = f"\n--- OPZIONE WEB {len(opzioni_estratte) + 1} ---\nURL_FONTE: {url}\nCONTENUTO:\n{testo_pulito[:4000]}\n"
+                                opzioni_estratte.append(testo_formattato)
 
-                    testo_lower = testo_pulito.lower()
-                    ha_keyword_ricetta = any(
-                        k in testo_lower
-                        for k in ["ingredient", "preparazion", "procediment", "dosi"]
-                    )
+                    if len(opzioni_estratte) >= 3:
+                        break
 
-                    if len(testo_pulito) > 600 and ha_keyword_ricetta:
-                        testo_estratto += f"\n--- FONTE PERTINENTE (URL: {url}) ---\n{testo_pulito[:8000]}\n"
-                        break  # Abbiamo trovato una fonte ottima e sufficientemente lunga, possiamo fermarci per evitare overflow
                 except Exception:
                     pass
 
-            if testo_estratto:
-                return testo_estratto
+            if opzioni_estratte:
+                return "".join(opzioni_estratte)
 
         except Exception as e:
             print(f"      [Web Tool] Errore nel tentativo {attempt+1}: {e}")
 
-    return "Non è stato possibile estrarre i contenuti delle pagine pertinenti e necessarie per questa ricetta, riprova con una query diversa fornendo più dettagli come ad esempio il sito (es. giallozafferano) o prova nei documenti locali."
+    return "Non è stato possibile estrarre i contenuti delle pagine pertinenti. Riprova con una query diversa."
 
 
 def topic_planner(state: AgentState) -> dict:
-    print("-> Esecuzione Topic Planner...")
+    print("-> Esecuzione Topic Planner con Coda Persistente (Primo, Secondo, Dolce)...")
 
+    # 1. Recupero degli argomenti passati dal Knowledge Graph per evitarli
     cypher_query = "MATCH (t:Topic) RETURN t.name AS name"
     risultati = graph_db.query(cypher_query)
-
     past_topics = [res["name"] for res in risultati if res.get("name")]
     rejected_topics = state.get("rejected_topics", [])
-
     all_avoids = past_topics + rejected_topics
 
-    print(f"   [KG] Argomenti passati trovati: {past_topics}")
+    print(f"   [KG] Argomenti passati da evitare: {past_topics}")
     if rejected_topics:
         print(f"   [Feedback] Argomenti scartati in questa sessione: {rejected_topics}")
 
-    prompt = (
-        f"La richiesta dell'utente è: '{state['user_request']}'.\n"
-        f"KNOWLEDGE GRAPH (RICETTE GIÀ SCRITTE): {all_avoids}.\n"
-        f"DEVI scegliere una nuova ricetta della cucina italiana COMPLETAMENTE DIVERSA da quelle scritte.\n"
-        f"DIVIETO ASSOLUTO: Non puoi proporre piatti già presenti nella lista dei vietati.\n"
-        f"REQUISITO: Identifica un 'Gap in coverage' (vuoto di copertura) esplorando qualcosa di nuovo.\n"
-        f"REGOLA DI FORMATTAZIONE TASSATIVA: Rispondi SOLO ED ESCLUSIVAMENTE con il NOME DELLA RICETTA. "
-        f"Non aggiungere descrizioni, non aggiungere ingredienti, non scrivere premesse. "
-        f"Esempio di risposta corretta: Pappardelle al Cinghiale"
-    )
-    try:
-        response = llm.invoke([HumanMessage(content=prompt)]).content
-        planned = (
-            [t.strip() for t in response.split(",")]
-            if "," in response
-            else [response.strip()]
-        )
-    except Exception as e:
-        print(f"   [Errore LLM] {e}")
-        planned = ["Default Topic 1", "Default Topic 2"]
+    # 2. Caricamento della coda persistente da file JSON
+    queue = load_planning_queue()
+    print(f"   [Planner] Coda attuale letta da file: {queue}")
 
-    print(f"   [LLM] Argomenti pianificati: {planned}")
+    current_topic = ""
+
+    if queue:
+        # CASO A: La coda ha elementi. Estraiamo il primo (FIFO)
+        next_item = queue.pop(0)
+        current_topic = next_item["ricetta"]
+        print(f"   [Planner] Consumata ricetta dalla coda: '{current_topic}' ({next_item['tipo']})")
+    else:
+        print("   [Planner] Coda vuota o primo avvio. Generazione intero menu (Primo, Secondo, Dolce)...")
+
+    if current_topic:
+        all_avoids.append(current_topic)
+        
+        
+    # 3. Identificazione delle categorie mancanti (Primo, Secondo, Dolce)
+    tipi_presenti = [item["tipo"] for item in queue]
+    tipi_mancanti = []
+    for tipo in ["Primo", "Secondo", "Dolce"]:
+        if tipo not in tipi_presenti:
+            tipi_mancanti.append(tipo)
+
+    # Evitiamo che l'LLM generi ricette uguali a quelle già ferme in coda
+    for item in queue:
+        all_avoids.append(item["ricetta"])
+
+    # 4. Chiediamo all'LLM di riempire i gap strutturali della coda
+    if tipi_mancanti:
+        print(f"   [Planner] Tipi di piatto da pianificare: {tipi_mancanti}")
+    
+        prompt = (
+            f"La richiesta dell'utente è: '{state['user_request']}'.\n"
+            f"KNOWLEDGE GRAPH (RICETTE DA EVITARE ASSOLUTAMENTE): {all_avoids}.\n"
+            f"Devi generare esattamente una nuova, famosa e autentica ricetta della cucina tradizionale italiana per ciascuna di queste categorie mancanti: {tipi_mancanti}.\n"
+            f"Punta a un livello di specificità medio (es. 'Risotto alla Milanese', 'Saltimbocca alla Romana', 'Tiramisù').\n\n"
+            f"REGOLA DI FORMATTAZIONE TASSATIVA:\n"
+            f"Rispondi SOLO ed esclusivamente con un array JSON valido, senza premesse, commenti o blocchi di testo.\n"
+            f"Ogni oggetto dell'array deve contenere esattamente le chiavi 'tipo' e 'ricetta'.\n"
+            f"Esempio di formato richiesto:\n"
+            f'[\n  {{"tipo": "Primo", "ricetta": "Spaghetti alla Carbonara"}},\n  {{"tipo": "Secondo", "ricetta": "Tagliata di Manzo"}}\n]'
+        )
+
+        try:
+            # CORREZIONE: Invocazione corretta del modello LLM
+            response = llm.invoke([HumanMessage(content=prompt)]).content.strip()
+
+            # Rimozione di eventuali blocchi di codice markdown (```json ... ```)
+            if response.startswith("```"):
+                response = re.sub(r"^```[a-zA-Z]*\n|```$", "", response, flags=re.M).strip()
+
+            # Estrattore difensivo Regex: isola solo l'array JSON valido
+            json_match = re.search(r"\[\s*\{.*\}\s*\]", response, re.DOTALL)
+            if json_match:
+                json_clean = json_match.group(0)
+            else:
+                json_clean = response
+
+            # CORREZIONE: Unica deserializzazione sicura eseguita dopo la pulizia regex
+            nuovi_piatti = json.loads(json_clean)
+            
+            if isinstance(nuovi_piatti, list):
+                # Se siamo al primo avvio (coda vuota), estraiamo subito il primo elemento generato come topic corrente
+                if not current_topic and nuovi_piatti:
+                    primo_estratto = nuovi_piatti.pop(0)
+                    current_topic = primo_estratto["ricetta"]
+                    print(f"   [Planner] Primo avvio: '{current_topic}' impostato come topic corrente.")
+
+                for piatto in nuovi_piatti:
+                    ricetta_nome = piatto.get("ricetta", "").strip()
+                    tipo_nome = piatto.get("tipo", "").strip().capitalize()
+                    
+                    if ricetta_nome and tipo_nome and (ricetta_nome not in all_avoids):
+                        queue.append({
+                            "tipo": tipo_nome,
+                            "ricetta": ricetta_nome
+                        })
+
+        except Exception as e:
+            print(f"   [Planner Errore LLM/Parsing JSON] {e}. Imposto fallback d'emergenza.")
+            # Fallback d'emergenza se l'LLM sbaglia il JSON o va in timeout
+            if not current_topic:
+                current_topic = "Spaghetti alla Carbonara"
+            if not queue:
+                queue = [
+                    {"tipo": "Secondo", "ricetta": "Cotoletta alla Milanese"},
+                    {"tipo": "Dolce", "ricetta": "Panna Cotta"},
+                ]
+
+    # Salva lo stato aggiornato della coda
+    save_planning_queue(queue)
+
+    # Estraiamo una lista piatta di stringhe per lo stato di LangGraph
+    planned_list = [item["ricetta"] for item in queue]
+
+    print(f"   [Planner] Topic Corrente in lavorazione: '{current_topic}'")
+    print(f"   [Planner] Prossimi in coda per le prossime volte: {planned_list}")
+
     return {
-        "planned_topics": planned,
-        "current_topic": planned[0],
+        "planned_topics": planned_list,
+        "current_topic": current_topic,
         "status": "planning_done",
     }
 
 
-@tool
-def cerca_sul_web(query: str) -> str:
-    """Restituisce un JSON sotto forma di stringa contenente i link trovati sul web tramite DuckDuckGo Search per la query specificata."""
-    print(f"      [Web Tool] Eseguo ricerca web tramite DuckDuckGo per: '{query}'...")
-    try:
-        results = ddg_search.results(query, max_results=6)
-        raw_results = []
-        for r in results:
-            raw_results.append(
-                {"url": r["link"], "snippet": r["snippet"], "title": r["title"]}
-            )
-        print(f"      [Web Tool] Trovati {len(raw_results)} risultati raw.")
-        return json.dumps(raw_results)
-    except Exception as e:
-        print(f"      [Web Tool] Errore: {e}")
-        return json.dumps([])
+
+import re
 
 
 def resource_researcher(state: AgentState) -> dict:
@@ -626,10 +700,16 @@ def resource_researcher(state: AgentState) -> dict:
     1. REASONING: Inizia ogni azione con 'Thought: ...'
     2. Usa SEMPRE come prima azione il tool 'kg_rag_tool'.
     3. Usa SUBITO il tool 'valuta_documento_locale' (chiamalo SOLO con il parametro target_topic, il testo è già memorizzato dal tool precedente). Se la risposta dice che copre interamente la variante, FERMATI ed esponi tu una sintesi che unisce ingredienti e passaggi di preparazione del piatto in un testo descrittivo.
-    4. Se l'esito della validazione del database locale è 'PARZIALE' perché manca un ingrediente o un dettaglio specifico rispetto al topic (es. hai 'frittata di asparagi' ma il topic è 'frittata di asparagi e parmigiano'), la ricerca sul web deve essere MIRATA a prendere le informazioni mancanti o la ricetta COMPLETA per integrarle.
-    5. Se il tool locale non trova nulla o tutti e sei insoddisfatto, usa 'cerca_e_leggi_sul_web' per ottenere l'intera ricetta. 
+    4. Se l'esito della validazione del database locale è 'PARZIALE' perché manca un ingrediente o un dettaglio specifico rispetto al topic, la ricerca sul web deve essere MIRATA a prendere le informazioni mancanti o la ricetta COMPLETA per integrarle.
+    5. Se il tool locale non trova nulla o sei insoddisfatto, usa 'cerca_e_leggi_sul_web' per ottenere l'intera ricetta. Questo tool andrà a restituire diverse fonti web, devi prendere la più inerente al nostro topic (anche basandoti sul nome della ricetta e gli ingredienti). 
     6. FALLBACK: Se anche dopo le stampe e le ricerche sul server web non si trova nulla di perfettamente completo, procedi prendendo assieme le informazioni e frammenti 'parziali' trovati fino ad ora, assemblando il draft con ciò che hai.
-    7. Alla fine di tutti i controlli, unisci ciò che hai ottenuto di buono sia in locale (se pertinente/parziale) che sul web. Come TUA risposta FINALE restituisci un unico riassunto descrittivo che contenga chiaramente la lista degli ingredienti e la preparazione. Non inviare json.
+    7. Alla fine di tutti i controlli, unisci ciò che hai ottenuto di buono sia in locale che sul web. Come TUA risposta FINALE restituisci un unico riassunto descrittivo.
+
+    REGOLA FONDAMENTALE PER LA RISPOSTA FINALE:
+    Se durante l'esecuzione hai usato il tool 'cerca_e_leggi_sul_web', inserisci alla fine del tuo riassunto una riga esatta con l'URL scelto:
+    URL_SELEZIONATO: <url_della_fonte_web>
+    Se NON hai usato il tool web perché il database locale era già sufficiente, scrivi semplicemente:
+    URL_SELEZIONATO: DB_Locale
     """
 
     print("   [ReAct] Avvio l'agente. Attendi l'elaborazione...")
@@ -654,9 +734,42 @@ def resource_researcher(state: AgentState) -> dict:
                 trace.append(obs_str)
                 print(f"   [ReAct] {obs_str}\n")
 
-        raw = [{"url": "ReAct Synthesis", "content": final_answer, "title": topic}]
+        ha_usato_il_web = False
+        url_da_tool = []
 
-        # Recuperiamo e passiamo al Drafter il testo locale epurato dai 'NO'
+        for msg in response.get("messages", []):
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    if tc.get("name") == "cerca_e_leggi_sul_web":
+                        ha_usato_il_web = True
+
+            if getattr(msg, "type", "") == "tool":
+                for line in str(msg.content).split("\n"):
+                    if "URL_FONTE:" in line:
+                        url_da_tool.append(line.split("URL_FONTE:")[1].strip())
+
+        url_scelto = "DB_Locale"
+        if ha_usato_il_web:
+            url_scelto = "Nessun URL trovato"
+
+            for line in final_answer.split("\n"):
+                clean_line = line.replace("**", "").replace("*", "")
+                if "URL_SELEZIONATO:" in clean_line.upper():
+                    parti = re.split(r"(?i)URL_SELEZIONATO:", clean_line)
+                    if len(parti) > 1:
+                        url_scelto = parti[1].strip()
+                        break
+
+            if url_scelto == "Nessun URL trovato":
+                links_nel_testo = re.findall(r"(https?://[^\s]+)", final_answer)
+                if links_nel_testo:
+                    url_scelto = links_nel_testo[-1]
+
+            if url_scelto == "Nessun URL trovato" and url_da_tool:
+                url_scelto = url_da_tool[0]
+
+        raw = [{"url": url_scelto, "content": final_answer, "title": topic}]
+
         contesto_rag_effettivo = _LAST_KG_RAG_RESULT.get("risultato", {}).get(
             "risposta_finale",
             "Nessun contesto DB locale o non attivato in modo sufficiente.",
@@ -707,7 +820,6 @@ def quality_fact_checker(state: AgentState) -> dict:
 
 
 def drafter(state: AgentState) -> dict:
-
     print("-> Esecuzione Drafter (Generazione testo in corso)...")
 
     claims_query = """
@@ -724,10 +836,14 @@ def drafter(state: AgentState) -> dict:
 
     feedback = state.get("human_feedback", "")
     previous_draft = state.get("draft", "")
-    sources = state.get("verified_resources", [])
     topic = state["current_topic"]
-
     contesto_rag = state.get("kg_context", "Nessun contesto RAG locale trovato.")
+
+    # Fallback sicuro: controlla sia verified_resources che raw_resources
+    sources = state.get("verified_resources") or state.get("raw_resources") or []
+
+    # Estraiamo l'URL pulito ricavato dal Resource Researcher
+    url_fonte = sources[0].get("url", "DB_Locale") if sources else "DB_Locale"
     sources_text = "\n".join([s.get("content", "")[:1000] for s in sources])
 
     prompt = (
@@ -741,20 +857,29 @@ def drafter(state: AgentState) -> dict:
         f"1. DEVI rispettare tassativamente gli ingredienti obbligatori e le tecniche indicati nel 'CONTESTO RAG UFFICIALE'.\n"
         f"2. Inizia la tua risposta ESATTAMENTE con 'TITOLO: <il tuo titolo accattivante>' sulla primissima riga.\n"
         f"3. L'articolo deve essere in italiano.\n"
-        f"4. Assicurati che l'articolo sia COERENTE (consistency) con le affermazioni passate. Non contraddirle.\n"
-        f"5. Se pertinente, CONNETTI (connect with existing topics) il nuovo post a una di queste vecchie informazioni.\n"
-        f"6. Scrivi in modo diretto come se fossi uno chef (VIETATO usare scuse, premesse o frasi come 'ecco l'articolo')."
-        f"7. L'articolo deve conterenere necessariamente la lista degli ingredienti della ricetta trattata.\n"
-        f"8. L'articolo deve contenere necessariamente la preparazione dettagliata della ricette trattata.\n"
-        f"9. CITAZIONI E GROUNDING OBBLIGATORI (REQUISITO DI PROGETTO CRITICO): Il tuo testo finale deve dimostrare CHIARAMENTE l'uso combinato delle due fonti di conoscenza. Devi applicare due tipi di citazioni in linea:\n"
-        f"   - Quando inserisci un ingrediente obbligatorio o una tecnica dettata dal database a grafi, usa: [Fonte: Knowledge Graph].\n"
-        f"   - Quando descrivi i passaggi pratici, i tempi o i dettagli tratti dai frammenti testuali vettoriali o dal web, usa: [Fonte: URL_O_NOME_DOCUMENTO].\n"
-        f"   Esempio di frase perfetta: 'Aggiungete il guanciale [Fonte: Knowledge Graph] e fatelo rosolare a fuoco lento per circa 10 minuti [Fonte: https://www.sito.it/ricetta]'. L'assenza di questa doppia citazione comporterà il rifiuto assoluto dell'articolo.\n"
+        f"4. Assicurati che l'articolo sia COERENTE con le affermazioni passate del blog. Non contraddirle.\n"
+        f"5. Se pertinente, CONNETTI il nuovo post a una di queste vecchie informazioni passate.\n"
+        f"6. Scrivi in modo diretto come se fossi uno chef (VIETATO usare scuse, premesse o frasi introduttive come 'ecco l'articolo').\n"
+        f"7. L'articolo deve contenere necessariamente la lista degli ingredienti della ricetta trattata.\n"
+        f"8. L'articolo deve contenere necessariamente la preparazione dettagliata della ricetta trattata.\n"
+        f"9. CITAZIONI IN LINEA OBBLIGATORIE (REQUISITO CRITICO): Il tuo testo finale deve dimostrare chiaramente l'uso combinato delle fonti. Applica queste citazioni nel testo:\n"
+        f"   - Quando inserisci un ingrediente obbligatorio o una tecnica del database locale, usa: [Fonte: Knowledge Graph].\n"
+        f"   - Quando descrivi passaggi pratici, tempi o dettagli presi dal web, usa tassativamente l'URL: [Fonte: {url_fonte}].\n"
+        f"   Esempio: 'Aggiungete il guanciale [Fonte: Knowledge Graph] e fatelo rosolare a fuoco lento per circa 10 minuti [Fonte: {url_fonte}].'\n"
+        f"10. DICITURA FINALE OBBLIGATORIA: Alla fine dell'articolo, lascia una riga vuota e inserisci la fonte globale. "
     )
 
+    # Configurazione dinamica della stringa finale in base alla provenienza dei dati
+    if url_fonte == "DB_Locale" or url_fonte == "Nessun URL trovato":
+        prompt += "Scrivi ESATTAMENTE: 'Fonte: Ricetta del database locale'."
+    else:
+        prompt += f"Scrivi ESATTAMENTE: 'Fonte web: {url_fonte}'."
+
+    # Gestione dell'eventuale ciclo di feedback umano
     if feedback and previous_draft:
         prompt += f"\n\nEcco la tua BOZZA PRECEDENTE:\n---\n{previous_draft}\n---\n\nCRITICO: L'utente ha rifiutato la bozza precedente con questo feedback: '{feedback}'. DEVI riscrivere pesantemente la bozza. Ricorda SEMPRE di focalizzarti su UNA SOLA RICETTA."
 
+    # 4. Invocazione del Modello
     try:
         response_text = llm.invoke([HumanMessage(content=prompt)]).content
     except Exception as e:
@@ -763,12 +888,15 @@ def drafter(state: AgentState) -> dict:
         )
         raise SystemExit(1)
 
+    # 5. Parsing del Titolo e pulizia del testo finale
     new_title = topic
     draft = response_text
 
     lines = response_text.split("\n")
     for i, line in enumerate(lines):
-        if line.strip().upper().startswith("TITOLO:"):
+        clean_line = line.strip().upper()
+        if clean_line.startswith("TITOLO:") or clean_line.startswith("**TITOLO:**"):
+            # Estraiamo il titolo pulito eliminando markdown e virgolette
             new_title = (
                 line.split(":", 1)[1]
                 .strip()
@@ -776,16 +904,7 @@ def drafter(state: AgentState) -> dict:
                 .replace('"', "")
                 .replace("'", "")
             )
-            draft = "\n".join(lines[:i] + lines[i + 1 :]).strip()
-            break
-        elif line.strip().upper().startswith("**TITOLO:**"):
-            new_title = (
-                line.split(":", 1)[1]
-                .strip()
-                .replace("**", "")
-                .replace('"', "")
-                .replace("'", "")
-            )
+            # Ricostruiamo il draft escludendo la riga del titolo
             draft = "\n".join(lines[:i] + lines[i + 1 :]).strip()
             break
 
@@ -793,6 +912,7 @@ def drafter(state: AgentState) -> dict:
         "draft": draft,
         "current_topic": new_title,
         "status": "draft_ready",
+        "verified_resources": sources,  # Manteniamo popolato lo stato per i nodi successivi
         "revision_count": state.get("revision_count", 0) + 1,
     }
 
@@ -1051,5 +1171,3 @@ initial_state = {
 for output in app.stream(initial_state):
     pass
 print("\n=== PROCESSO CONCLUSO ===")
-
-
