@@ -78,6 +78,8 @@ class AgentState(TypedDict):
     kg_context: Any
     planned_topics: List[str]
     current_topic: str
+    current_topic_type: str 
+    editorial_justification: str
     raw_resources: List[Dict[str, str]]
     verified_resources: List[Dict[str, str]]
     draft: str
@@ -575,14 +577,17 @@ def topic_planner(state: AgentState) -> dict:
     print(f"   [Planner] Coda attuale letta da file: {queue}")
 
     current_topic = ""
+    current_topic_type = ""
 
-    if queue:
-        # CASO A: La coda ha elementi. Estraiamo il primo (FIFO)
+    last_status = state.get("status", "")
+
+    if queue and last_status != "rejected_topic":
         next_item = queue.pop(0)
         current_topic = next_item["ricetta"]
-        print(f"   [Planner] Consumata ricetta dalla coda: '{current_topic}' ({next_item['tipo']})")
-    else:
-        print("   [Planner] Coda vuota o primo avvio. Generazione intero menu (Primo, Secondo, Dolce)...")
+        current_topic_type = next_item["tipo"]
+        print(f"   [Planner] Consumata ricetta dalla coda: '{current_topic}' ({current_topic_type})")
+    elif last_status == "rejected_topic" and rejected_topics:
+        print(f"   [Planner] Rilevato topic scartato. Rigenerazione della categoria specifica per mantenere l'equilibrio...")
 
     if current_topic:
         all_avoids.append(current_topic)
@@ -598,6 +603,8 @@ def topic_planner(state: AgentState) -> dict:
     for item in queue:
         all_avoids.append(item["ricetta"])
 
+    justification = state.get("editorial_justification", "Nessuna giustificazione precedente.")
+
     # 4. Chiediamo all'LLM di riempire i gap strutturali della coda
     if tipi_mancanti:
         print(f"   [Planner] Tipi di piatto da pianificare: {tipi_mancanti}")
@@ -608,10 +615,17 @@ def topic_planner(state: AgentState) -> dict:
             f"Devi generare esattamente una nuova, famosa e autentica ricetta della cucina tradizionale italiana per ciascuna di queste categorie mancanti: {tipi_mancanti}.\n"
             f"Punta a un livello di specificità medio (es. 'Risotto alla Milanese', 'Saltimbocca alla Romana', 'Tiramisù').\n\n"
             f"REGOLA DI FORMATTAZIONE TASSATIVA:\n"
-            f"Rispondi SOLO ed esclusivamente con un array JSON valido, senza premesse, commenti o blocchi di testo.\n"
-            f"Ogni oggetto dell'array deve contenere esattamente le chiavi 'tipo' e 'ricetta'.\n"
+            f"Rispondi SOLO ed esclusivamente con un oggetto JSON valido contenente due chiavi:\n"
+            f"1. 'giustificazione_editoriale': Spiega esplicitamente in una frase perché la scelta di queste specifiche ricette garantisce diversità, copertura del dominio ed una strategia editoriale coerente rispetto al passato del blog.\n"
+            f"2. 'sequenza_piano': Un array di oggetti, dove ciascun oggetto contiene le chiavi 'tipo' e 'ricetta'.\n\n"
             f"Esempio di formato richiesto:\n"
-            f'[\n  {{"tipo": "Primo", "ricetta": "Spaghetti alla Carbonara"}},\n  {{"tipo": "Secondo", "ricetta": "Tagliata di Manzo"}}\n]'
+            f"{{\n"
+            f'  "giustificazione_editoriale": "Pianifico un Primo romano per coprire il centro Italia e un Dolce piemontese per bilanciare il menu strutturale.",\n'
+            f'  "sequenza_piano": [\n'
+            f'    {{"tipo": "Primo", "ricetta": "Spaghetti alla Carbonara"}},\n'
+            f'    {{"tipo": "Dolce", "ricetta": "Panna Cotta"}}\n'
+            f'  ]\n'
+            f"}}"
         )
 
         try:
@@ -623,14 +637,12 @@ def topic_planner(state: AgentState) -> dict:
                 response = re.sub(r"^```[a-zA-Z]*\n|```$", "", response, flags=re.M).strip()
 
             # Estrattore difensivo Regex: isola solo l'array JSON valido
-            json_match = re.search(r"\[\s*\{.*\}\s*\]", response, re.DOTALL)
-            if json_match:
-                json_clean = json_match.group(0)
-            else:
-                json_clean = response
+            json_match = re.search(r"\{.*\}", response, re.DOTALL)
+            json_clean = json_match.group(0) if json_match else response
 
-            # CORREZIONE: Unica deserializzazione sicura eseguita dopo la pulizia regex
-            nuovi_piatti = json.loads(json_clean)
+            data_pianificata = json.loads(json_clean)
+            justification = data_pianificata.get("giustificazione_editoriale", "Pianificazione strategica per la diversità del menu.")
+            nuovi_piatti = data_pianificata.get("sequenza_piano", [])
             
             if isinstance(nuovi_piatti, list):
                 # Se siamo al primo avvio (coda vuota), estraiamo subito il primo elemento generato come topic corrente
@@ -671,6 +683,7 @@ def topic_planner(state: AgentState) -> dict:
                     {"tipo": "Secondo", "ricetta": "Cotoletta alla Milanese"},
                     {"tipo": "Dolce", "ricetta": "Panna Cotta"},
                 ]
+            justification = "Fallback applicato per mantenere la continuità editoriale."
     
 
     # Salva lo stato aggiornato della coda
@@ -685,6 +698,8 @@ def topic_planner(state: AgentState) -> dict:
     return {
         "planned_topics": planned_list,
         "current_topic": current_topic,
+        "current_topic_type": current_topic_type,
+        "editorial_justification": justification,
         "status": "planning_done",
     }
 
@@ -849,6 +864,8 @@ def drafter(state: AgentState) -> dict:
     feedback = state.get("human_feedback", "")
     previous_draft = state.get("draft", "")
     topic = state["current_topic"]
+    topic_type = state.get("current_topic_type", "Piatto della tradizione")
+    justification_context = state.get("editorial_justification", "")
     contesto_rag = state.get("kg_context", "Nessun contesto RAG locale trovato.")
 
     # Fallback sicuro: controlla sia verified_resources che raw_resources
@@ -860,6 +877,8 @@ def drafter(state: AgentState) -> dict:
 
     prompt = (
         f"Scrivi un coinvolgente articolo di blog su come preparare la ricetta: '{topic}'.\n\n"
+        f"Questo piatto è classificato nella categoria: {topic_type}.\n"
+        f"Strategia editoriale associata: {justification_context}\n\n"
         f"=== CONTESTO RAG UFFICIALE (Knowledge Graph + Vector DB locale) ===\n"
         f"{contesto_rag}\n"
         f"===================================================================\n\n"
@@ -969,10 +988,16 @@ def human_review(state: AgentState) -> dict:
     root.title(f"Revisione Bozza: {topic}")
     root.geometry("850x650")
 
+    justification_text = state.get("editorial_justification", "Nessuna giustificazione fornita.")
+    topic_type = state.get("current_topic_type", "N/A")
+
     lbl = tk.Label(
         root,
-        text="Ecco la bozza generata. Scegli se approvare, chiedere modifiche o scartare l'argomento:",
-        font=("Helvetica", 12, "bold"),
+        text=f"Argomento attuale: {topic} ({topic_type})\nStrategia: {justification_text}",
+        font=("Helvetica", 11, "italic"),
+        fg="blue",
+        justify=tk.LEFT,
+        wraplength=800
     )
     lbl.pack(pady=10)
 
@@ -1248,6 +1273,8 @@ initial_state = {
     "kg_context": None,
     "planned_topics": [],
     "current_topic": "",
+    "current_topic_type": "", 
+    "editorial_justification": "",
     "raw_resources": [],
     "verified_resources": [],
     "draft": "",

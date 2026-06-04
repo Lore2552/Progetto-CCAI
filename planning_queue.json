@@ -1,14 +1,14 @@
 [
     {
+        "tipo": "Primo",
+        "ricetta": "Pappardelle al Pesto"
+    },
+    {
         "tipo": "Secondo",
-        "ricetta": "Brasato al Barolo"
+        "ricetta": "Pollo alla Marsala"
     },
     {
         "tipo": "Dolce",
         "ricetta": "Babà"
-    },
-    {
-        "tipo": "Primo",
-        "ricetta": "Tortellini en Brodo di Carne"
     }
 ]
