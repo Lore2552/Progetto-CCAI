@@ -619,9 +619,10 @@ def resource_researcher(state: AgentState) -> dict:
     2. Usa SEMPRE come prima azione il tool 'kg_rag_tool'.
     3. Usa SUBITO il tool 'valuta_documento_locale' (chiamalo SOLO con il parametro target_topic, il testo è già memorizzato dal tool precedente). Se la risposta dice che copre interamente la variante, FERMATI ed esponi tu una sintesi che unisce ingredienti e passaggi di preparazione del piatto in un testo descrittivo.
     4. Se l'esito della validazione del database locale è 'PARZIALE' perché manca un ingrediente o un dettaglio specifico rispetto al topic, la ricerca sul web deve essere MIRATA a prendere le informazioni mancanti o la ricetta COMPLETA per integrarle.
-    5. Se il tool locale non trova nulla o sei insoddisfatto, usa 'cerca_e_leggi_sul_web' per ottenere l'intera ricetta. Questo tool andrà a restituire diverse fonti web, devi prendere la più inerente al nostro topic (anche basandoti sul nome della ricetta e gli ingredienti). 
-    6. FALLBACK: Se anche dopo le stampe e le ricerche sul server web non si trova nulla di perfettamente completo, procedi prendendo assieme le informazioni e frammenti 'parziali' trovati fino ad ora, assemblando il draft con ciò che hai.
-    7. Alla fine di tutti i controlli, unisci ciò che hai ottenuto di buono sia in locale che sul web. Come TUA risposta FINALE restituisci un unico riassunto descrittivo.
+    5. Se il tool locale non trova nulla oppure abbiamo informazioni parziali, usa 'cerca_e_leggi_sul_web' per ottenere l'intera ricetta. Questo tool andrà a restituire diverse fonti web, devi prendere la più inerente al nostro topic (anche basandoti sul nome della ricetta e gli ingredienti). 
+    6. Scrivi sempre un Thought sulla scelta dell'url più consono tra quelli restituiti dal tool web, spiegando il motivo della scelta (es. "Ho scelto questa fonte perché il titolo della pagina contiene esattamente il nome della ricetta e gli ingredienti chiave richiesti").
+    7. FALLBACK: Se anche dopo le stampe e le ricerche sul server web non si trova nulla di perfettamente completo, procedi prendendo assieme le informazioni e frammenti 'parziali' trovati fino ad ora, assemblando il draft con ciò che hai.
+    8. Alla fine di tutti i controlli, unisci ciò che hai ottenuto di buono sia in locale che sul web. Come TUA risposta FINALE restituisci un unico riassunto descrittivo.
 
     REGOLA FONDAMENTALE PER LA RISPOSTA FINALE:
     Se durante l'esecuzione hai usato il tool 'cerca_e_leggi_sul_web', inserisci alla fine del tuo riassunto una riga esatta con l'URL scelto:
@@ -781,9 +782,9 @@ def drafter(state: AgentState) -> dict:
         f"7. L'articolo deve contenere necessariamente la lista degli ingredienti della ricetta trattata.\n"
         f"8. L'articolo deve contenere necessariamente la preparazione dettagliata della ricetta trattata.\n"
         f"9. CITAZIONI IN LINEA OBBLIGATORIE (REQUISITO CRITICO): Il tuo testo finale deve dimostrare chiaramente l'uso combinato delle fonti. Applica queste citazioni nel testo:\n"
-        f"   - Quando inserisci un ingrediente obbligatorio o una tecnica del database locale, usa: [Fonte: Knowledge Graph].\n"
+        f"   - Quando inserisci un ingrediente obbligatorio o una tecnica del database locale, usa: [Fonte: DB Locale].\n"
         f"   - Quando descrivi passaggi pratici, tempi o dettagli presi dal web, usa tassativamente l'URL: [Fonte: {url_fonte}].\n"
-        f"   Esempio: 'Aggiungete il guanciale [Fonte: Knowledge Graph] e fatelo rosolare a fuoco lento per circa 10 minuti [Fonte: {url_fonte}].'\n"
+        f"   Esempio: 'Aggiungete il guanciale [Fonte: DB Locale] e fatelo rosolare a fuoco lento per circa 10 minuti [Fonte: {url_fonte}].'\n"
         f"10. DICITURA FINALE OBBLIGATORIA: Alla fine dell'articolo, lascia una riga vuota e inserisci la fonte globale. "
     )
 
