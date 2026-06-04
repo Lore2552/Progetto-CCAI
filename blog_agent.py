@@ -1055,6 +1055,7 @@ def drafter(state: AgentState) -> dict:
         f"   Esempio: 'Aggiungete il guanciale [Fonte: Knowledge Graph] e fatelo rosolare a fuoco lento per circa 10 minuti [Fonte: {url_fonte}].'\n"
         f"10. DICITURA FINALE OBBLIGATORIA: Alla fine dell'articolo, lascia una riga vuota e inserisci la fonte globale. "
         f"11. DIVIETO SUI PREZZI: È SEVERAMENTE VIETATO inserire costi, prezzi o valute (es. €) accanto agli ingredienti nella bozza. Scrivi solo il nome dell'ingrediente e la quantità (es. 'Uova (3 medie)'). Ai prezzi ci penserà il reparto contabilità successivamente."
+        f"12. LUNGHEZZA E STILE EDITORIALE: Mantieni l'articolo entro circa 650-900 parole. "
     )
 
     # Configurazione dinamica della stringa finale in base alla provenienza dei dati
@@ -1072,7 +1073,8 @@ def drafter(state: AgentState) -> dict:
             f"Ricorda la Regola 11: durante la riscrittura, ELIMINA qualsiasi prezzo in Euro eventualmente presente. Lascia la lista degli ingredienti pulita."
         )
     try:
-        response_text = llm.invoke([("human", prompt)]).content
+        drafter_llm = llm.bind(max_tokens=1800)
+        response_text = drafter_llm.invoke([("human", prompt)]).content
     except Exception as e:
         print(
             f"\n[ERRORE FATALE] Impossibile generare la bozza a causa di un errore API: {e}"
