@@ -1,14 +1,14 @@
 [
     {
         "tipo": "Primo",
-        "ricetta": "Pappardelle al Pesto"
+        "ricetta": "Tortino di Patate e Salsiccia"
     },
     {
         "tipo": "Secondo",
-        "ricetta": "Pollo alla Marsala"
+        "ricetta": "Brasato al Barolo"
     },
     {
         "tipo": "Dolce",
-        "ricetta": "Babà"
+        "ricetta": "Panettone"
     }
 ]
