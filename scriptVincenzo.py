@@ -31,6 +31,7 @@ llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.1)
 
 ddg_search = DuckDuckGoSearchAPIWrapper(max_results=5)
 
+
 def load_planning_queue() -> List[Dict[str, str]]:
     """Carica la coda di pianificazione dal file JSON."""
     if os.path.exists(PLANNING_FILE):
@@ -40,6 +41,7 @@ def load_planning_queue() -> List[Dict[str, str]]:
         except Exception as e:
             print(f"   [Planner] Errore lettura file di piano: {e}. Ricreo coda.")
     return []
+
 
 def save_planning_queue(queue: List[Dict[str, str]]):
     """Salva la coda di pianificazione su file JSON."""
@@ -55,6 +57,7 @@ graph_db = Neo4jGraph(
     url=os.environ.get("NEO4J_URI"),
     username=os.environ.get("NEO4J_USERNAME"),
     password=os.environ.get("NEO4J_PASSWORD"),
+    database="970b4e6b",
 )
 
 
@@ -78,7 +81,7 @@ class AgentState(TypedDict):
     kg_context: Any
     planned_topics: List[str]
     current_topic: str
-    current_topic_type: str 
+    current_topic_type: str
     editorial_justification: str
     raw_resources: List[Dict[str, str]]
     verified_resources: List[Dict[str, str]]
@@ -181,15 +184,25 @@ def kg_rag_tool(topic: str) -> str:
     # 1. QUERY RECIPE KG (Incluso URL)
     # -------------------------------------------------------------------------
     cypher_query = """
+    WITH split(toLower($topic), " ") AS parole
     MATCH (r:Recipe)
-    WHERE $topic CONTAINS r.title OR r.title CONTAINS $topic
+    // Usiamo size() al posto di length() per evitare il conflitto di tipo
+    WHERE any(parola IN parole WHERE size(parola) > 3 AND toLower(r.title) CONTAINS parola)
+    
     OPTIONAL MATCH (r)-[:USES_INGREDIENT]->(i:Ingredient)
     OPTIONAL MATCH (r)-[:USES_TECHNIQUE]->(t:Technique)
+    
+    // Calcoliamo il punteggio usando size() anche qui
+    WITH r, i, t, [p IN parole WHERE size(p) > 3 AND toLower(r.title) CONTAINS p] AS matches
     RETURN r.title AS recipe, 
            r.url AS url,
            collect(DISTINCT i.name) AS ingredients, 
-           collect(DISTINCT t.name) AS techniques
+           collect(DISTINCT t.name) AS techniques,
+           size(matches) AS score
+    ORDER BY score DESC
+    LIMIT 1
     """
+
     try:
         risultato = graph_db.query(cypher_query, params={"topic": topic})
     except Exception as e:
@@ -358,6 +371,121 @@ def kg_rag_tool(topic: str) -> str:
     }
 
     return risposta_tool
+
+
+@tool
+def cerca_nel_database_ismea(ingredienti_ricetta: list) -> str:
+    """
+    Cerca i prezzi, le alternative BIO e suggerisce i vini per una ricetta.
+    Usa un LLM interno per tradurre i dialetti, fare i calcoli matematici e ragionare sugli abbinamenti.
+    """
+    print(
+        f"      [ISMEA Tool] Avvio LLM per mappare e calcolare: {ingredienti_ricetta}..."
+    )
+
+    try:
+        with open("database_unico_ismea.json", "r", encoding="utf-8") as f:
+            db = json.load(f)
+    except Exception as e:
+        return f"Errore: Impossibile accedere al database ISMEA. Dettagli: {e}"
+
+    # 1. Creiamo dizionari compatti da passare all'LLM contenenti NOME e DATI GREZZI
+    # Esempio risultato: {"uova": "33.79 100 unità", "rum": "441.92 t"}
+    catalogo_standard = {
+        k: f"{v['prezzo']} {v['um']}"
+        for k, v in db.get("ingredienti_standard", {}).items()
+    }
+    catalogo_bio = {
+        k: f"{v['prezzo']} {v['um']}" for k, v in db.get("ingredienti_bio", {}).items()
+    }
+
+    # 2. Prompt per l'LLM: gli affidiamo Semantica, Costo Reale e Sommelier
+    prompt_ragionamento = f"""Sei un autorevole esperto culinario, un sommelier professionista e un matematico finanziario di precisione assoluta.
+    Analizza questa lista di ingredienti estratti da una ricetta, che include le quantità specifiche richieste:
+    {ingredienti_ricetta}
+
+    CATALOGO REALE ISMEA (NOME: PREZZO BASE E UNITÀ DI MISURA ALL'INGROSSO):
+    - Standard: {catalogo_standard}
+    - BIO: {catalogo_bio}
+
+    COMPITO 1 (MAPPATURA SEMANTICA E SINONIMI): 
+    Il catalogo ISMEA usa termini commerciali all'ingrosso. Devi mappare gli ingredienti della ricetta usando i sinonimi logici del catalogo:
+    - "Zucchero" o "Zucchero velo" -> Cerca "Zucchero" o "Saccarosio"
+    - "Farina Manitoba" o "Farina" -> Cerca "Frumento tenero" o "Farina di frumento"
+    - "Burro" -> Cerca "Burro" o "Latte vaccino (freschi)"
+    - "Rum" o alcolici -> Se assenti nel catalogo, non inventare i prezzi, lasciali vuoti.
+    Se trovi un match logico, procedi al calcolo. Se è totalmente assente, non inserirlo nel JSON.
+
+    COMPITO 2 (CALCOLO MATEMATICO PROPORZIONALE DELLA PORZIONE):
+    Calcola il costo ESATTO della quantità richiesta nella ricetta basandoti sul prezzo all'ingrosso del catalogo.
+    ⚠️ REGOLE DI CONVERSIONE TASSATIVE PER IL MATEMATICO:
+    - Se l'unità del catalogo è 't' (Tonnellata): dividi il prezzo per 1.000.000 per ottenere il prezzo al grammo, poi moltiplica per i grammi esatti della ricetta. (Es: Frumento 400 €/t -> 400 / 1.000.000 = 0.0004 €/g. Per 300 g di farina: 0.0004 * 300 = 0.12 €).
+    - Se l'unità del catalogo è 'q.le' o '100 kg' (Quintale): dividi il prezzo per 100.000 per ottenere il prezzo al grammo, poi moltiplica per i grammi della ricetta.
+    - Se l'unità del catalogo è '100 unità' o '100 pezzi': dividi il prezzo per 100 per trovare il prezzo del singolo pezzo, poi moltiplica per il numero di pezzi richiesti (Es: Uova ricetta = 3. Catalogo = 14.60 € / 100 pezzi -> 0.146 € a uovo. Per 3 uova = 0.146 * 3 = 0.44 €).
+    - Se la quantità nella ricetta usa frazioni come '½', considerala come metà unità (0.5) o convertila in grammi stimati (es. scorza = 5g).
+    - Se la quantità è "q.b.", restituisci il prezzo convertito al chilogrammo finito (es. "Circa 1.20 €/Kg").
+
+    Formatta il campo "prezzo_finale" esattamente così: "Circa X.XX € (per VALORE_QUANTITÀ_RICETTA)" (Es: "Circa 0.12 € (per 300 g)" oppure "Circa 1.32 € (per 3 uova)").
+
+    COMPITO 3 (ABBINAMENTO VINO DA SOMMELIER):
+    Seleziona un vino specifico in abbinamento e spiega la scelta.
+
+    Rispondi ESCLUSIVAMENTE con un JSON valido, senza markdown (NO ```json), strutturato così:
+    {{
+        "ingredienti_trovati": [
+            {{"richiesto": "nome_originale", "trovato": "nome_nel_catalogo", "prezzo_finale": "costo calcolato proporzionale"}}
+        ],
+        "alternative_bio": [
+            {{"richiesto": "nome_originale", "trovato": "nome_nel_catalogo_bio", "prezzo_finale": "costo bio calcolato proporzionale"}}
+        ],
+        "vino": "Nome del vino e motivazione."
+    }}
+    """
+
+    try:
+        risposta_llm = llm.invoke([("human", prompt_ragionamento)]).content
+        risposta_pulita = risposta_llm.replace("```json", "").replace("```", "").strip()
+        ragionamento = json.loads(risposta_pulita)
+    except Exception as e:
+        print(f"      [ISMEA Tool - Errore LLM interno] {e}")
+        return "Errore durante il ragionamento semantico e calcolo dei prezzi."
+
+    # 3. Ricostruzione dell'output fidandosi ciecamente dei calcoli e del JSON dell'LLM
+    risultati = {"prezzi_trovati": [], "alternative_bio_suggerite": []}
+
+    for item in ragionamento.get("ingredienti_trovati", []):
+        risultati["prezzi_trovati"].append(
+            f"- {item['richiesto']} (identificato come '{item['trovato']}'): {item['prezzo_finale']}"
+        )
+
+    for item in ragionamento.get("alternative_bio", []):
+        risultati["alternative_bio_suggerite"].append(
+            f"- Variante Naturale: Sostituisci '{item['richiesto']}' con '{item['trovato'].title()} BIO' (Costo: {item['prezzo_finale']})"
+        )
+
+    # 4. Formattazione finale per l'Enricher
+    output = "RISULTATI RICERCA ISMEA (Semantica e Prezzi calcolati da LLM):\n"
+    output += (
+        "Prezzi da usare:\n"
+        + (
+            "\n".join(risultati["prezzi_trovati"])
+            if risultati["prezzi_trovati"]
+            else "Nessuno."
+        )
+        + "\n\n"
+    )
+    output += (
+        "Alternative BIO:\n"
+        + (
+            "\n".join(risultati["alternative_bio_suggerite"])
+            if risultati["alternative_bio_suggerite"]
+            else "Nessuna."
+        )
+        + "\n\n"
+    )
+    output += "Vino:\n" + ragionamento.get("vino", "Nessun abbinamento.")
+
+    return output
 
 
 @tool
@@ -585,13 +713,17 @@ def topic_planner(state: AgentState) -> dict:
         next_item = queue.pop(0)
         current_topic = next_item["ricetta"]
         current_topic_type = next_item["tipo"]
-        print(f"   [Planner] Consumata ricetta dalla coda: '{current_topic}' ({current_topic_type})")
+        print(
+            f"   [Planner] Consumata ricetta dalla coda: '{current_topic}' ({current_topic_type})"
+        )
     elif last_status == "rejected_topic" and rejected_topics:
-        print(f"   [Planner] Rilevato topic scartato. Rigenerazione della categoria specifica per mantenere l'equilibrio...")
+        print(
+            f"   [Planner] Rilevato topic scartato. Rigenerazione della categoria specifica per mantenere l'equilibrio..."
+        )
 
     if current_topic:
         all_avoids.append(current_topic)
-        
+
     # 3. Identificazione delle categorie mancanti (Primo, Secondo, Dolce)
     tipi_presenti = [item["tipo"] for item in queue]
     tipi_mancanti = []
@@ -603,12 +735,14 @@ def topic_planner(state: AgentState) -> dict:
     for item in queue:
         all_avoids.append(item["ricetta"])
 
-    justification = state.get("editorial_justification", "Nessuna giustificazione precedente.")
+    justification = state.get(
+        "editorial_justification", "Nessuna giustificazione precedente."
+    )
 
     # 4. Chiediamo all'LLM di riempire i gap strutturali della coda
     if tipi_mancanti:
         print(f"   [Planner] Tipi di piatto da pianificare: {tipi_mancanti}")
-    
+
         prompt = (
             f"La richiesta dell'utente è: '{state['user_request']}'.\n"
             f"KNOWLEDGE GRAPH (RICETTE DA EVITARE ASSOLUTAMENTE): {all_avoids}.\n"
@@ -624,7 +758,8 @@ def topic_planner(state: AgentState) -> dict:
             f'  "sequenza_piano": [\n'
             f'    {{"tipo": "Primo", "ricetta": "Spaghetti alla Carbonara"}},\n'
             f'    {{"tipo": "Dolce", "ricetta": "Panna Cotta"}}\n'
-            f'  ]\n'
+            f"  ]\n"
+            f"CRITICO: Se il nome della ricetta è molto simile ad un altro presente nel knowledge graph (ad esempio, nel knowledge graph c'è scritto la ricetta classica dei tortellini en brodo, e la ricetta da valutare è tortellini in brodo, o tortellini al brodo) non devi includerla ASSOLUTAMENTE."
             f"}}"
         )
 
@@ -634,33 +769,43 @@ def topic_planner(state: AgentState) -> dict:
 
             # Rimozione di eventuali blocchi di codice markdown (```json ... ```)
             if response.startswith("```"):
-                response = re.sub(r"^```[a-zA-Z]*\n|```$", "", response, flags=re.M).strip()
+                response = re.sub(
+                    r"^```[a-zA-Z]*\n|```$", "", response, flags=re.M
+                ).strip()
 
             # Estrattore difensivo Regex: isola solo l'array JSON valido
             json_match = re.search(r"\{.*\}", response, re.DOTALL)
             json_clean = json_match.group(0) if json_match else response
 
             data_pianificata = json.loads(json_clean)
-            justification = data_pianificata.get("giustificazione_editoriale", "Pianificazione strategica per la diversità del menu.")
+            justification = data_pianificata.get(
+                "giustificazione_editoriale",
+                "Pianificazione strategica per la diversità del menu.",
+            )
             nuovi_piatti = data_pianificata.get("sequenza_piano", [])
-            
+
             if isinstance(nuovi_piatti, list):
                 # Se siamo al primo avvio (coda vuota), estraiamo subito il primo elemento generato come topic corrente
                 if not current_topic and nuovi_piatti:
                     primo_estratto = nuovi_piatti.pop(0)
                     current_topic = primo_estratto["ricetta"]
-                    print(f"   [Planner] Primo avvio: '{current_topic}' impostato come topic corrente.")
+                    print(
+                        f"   [Planner] Primo avvio: '{current_topic}' impostato come topic corrente."
+                    )
 
                 for piatto in nuovi_piatti:
                     ricetta_nome = piatto.get("ricetta", "").strip()
                     tipo_nome = piatto.get("tipo", "").strip().capitalize()
-                    
+
                     if ricetta_nome and tipo_nome:
                         ricetta_lower = ricetta_nome.lower()
                         is_duplicate = False
                         for avoid_item in all_avoids:
                             avoid_lower = avoid_item.lower()
-                            if ricetta_lower in avoid_lower or avoid_lower in ricetta_lower:
+                            if (
+                                ricetta_lower in avoid_lower
+                                or avoid_lower in ricetta_lower
+                            ):
                                 is_duplicate = True
                                 break
 
@@ -670,11 +815,14 @@ def topic_planner(state: AgentState) -> dict:
                             if tipo_nome in tipi_mancanti:
                                 tipi_mancanti.remove(tipo_nome)
                         else:
-                            print(f"   [Planner BUG-SHIELD] Scartato duplicato semantico: '{ricetta_nome}'")
-
+                            print(
+                                f"   [Planner BUG-SHIELD] Scartato duplicato semantico: '{ricetta_nome}'"
+                            )
 
         except Exception as e:
-            print(f"   [Planner Errore LLM/Parsing JSON] {e}. Imposto fallback d'emergenza.")
+            print(
+                f"   [Planner Errore LLM/Parsing JSON] {e}. Imposto fallback d'emergenza."
+            )
             # Fallback d'emergenza se l'LLM sbaglia il JSON o va in timeout
             if not current_topic:
                 current_topic = "Spaghetti alla Carbonara"
@@ -684,7 +832,6 @@ def topic_planner(state: AgentState) -> dict:
                     {"tipo": "Dolce", "ricetta": "Panna Cotta"},
                 ]
             justification = "Fallback applicato per mantenere la continuità editoriale."
-    
 
     # Salva lo stato aggiornato della coda
     save_planning_queue(queue)
@@ -702,10 +849,6 @@ def topic_planner(state: AgentState) -> dict:
         "editorial_justification": justification,
         "status": "planning_done",
     }
-
-
-
-import re
 
 
 def resource_researcher(state: AgentState) -> dict:
@@ -729,8 +872,9 @@ def resource_researcher(state: AgentState) -> dict:
     3. Usa SUBITO il tool 'valuta_documento_locale' (chiamalo SOLO con il parametro target_topic, il testo è già memorizzato dal tool precedente). Se la risposta dice che copre interamente la variante, FERMATI ed esponi tu una sintesi che unisce ingredienti e passaggi di preparazione del piatto in un testo descrittivo.
     4. Se l'esito della validazione del database locale è 'PARZIALE' perché manca un ingrediente o un dettaglio specifico rispetto al topic, la ricerca sul web deve essere MIRATA a prendere le informazioni mancanti o la ricetta COMPLETA per integrarle.
     5. Se il tool locale non trova nulla o sei insoddisfatto, usa 'cerca_e_leggi_sul_web' per ottenere l'intera ricetta. Questo tool andrà a restituire diverse fonti web, devi prendere la più inerente al nostro topic (anche basandoti sul nome della ricetta e gli ingredienti). 
-    6. FALLBACK: Se anche dopo le stampe e le ricerche sul server web non si trova nulla di perfettamente completo, procedi prendendo assieme le informazioni e frammenti 'parziali' trovati fino ad ora, assemblando il draft con ciò che hai.
-    7. Alla fine di tutti i controlli, unisci ciò che hai ottenuto di buono sia in locale che sul web. Come TUA risposta FINALE restituisci un unico riassunto descrittivo.
+    6. Se cerca_e_leggi_sul_web restituisce siti web non italiani (ad esempio spagnoli,inglesi,ecc) devi ripetere la ricerca magari cambiando qualche parola chiave per cercare di ottenere risultati più pertinenti alla cucina italiana. Puoi fare fino a 3 tentativi di ricerca web modificando leggermente la query.
+    7. FALLBACK: Se anche dopo le stampe e le ricerche sul server web non si trova nulla di perfettamente completo, procedi prendendo assieme le informazioni e frammenti 'parziali' trovati fino ad ora, assemblando il draft con ciò che hai.
+    8. Alla fine di tutti i controlli, unisci ciò che hai ottenuto di buono sia in locale che sul web. Come TUA risposta FINALE restituisci un unico riassunto descrittivo.
 
     REGOLA FONDAMENTALE PER LA RISPOSTA FINALE:
     Se durante l'esecuzione hai usato il tool 'cerca_e_leggi_sul_web', inserisci alla fine del tuo riassunto una riga esatta con l'URL scelto:
@@ -832,6 +976,7 @@ def quality_fact_checker(state: AgentState) -> dict:
             f"Testo della ricetta da validare:\n'{content}'.\n\n"
             f"La ricetta è già inclusa nel knowledge graph? Se si, rispondi 'NO'.\n"
             f"Il procedimento espone la preparazione di questo piatto ed è valido? Rispondi esattamente 'SI' o 'NO'."
+            f"CRITICO: Se il nome della ricetta è molto simile ad un altro presente nel knoledge graph (ad esempio, nel knowledge graph c'è scritto la ricetta classica dei tortellini en brodo, e la ricetta da valutare è tortellini in brodo, o tortellini al brodo) devi rispondere 'SI' perché è una variante molto comune e accettabile."
         )
         try:
             eval_res = llm.invoke([HumanMessage(content=prompt)]).content.upper()
@@ -892,12 +1037,15 @@ def drafter(state: AgentState) -> dict:
         f"5. Se pertinente, CONNETTI il nuovo post a una di queste vecchie informazioni passate.\n"
         f"6. Scrivi in modo diretto come se fossi uno chef (VIETATO usare scuse, premesse o frasi introduttive come 'ecco l'articolo').\n"
         f"7. L'articolo deve contenere necessariamente la lista degli ingredienti della ricetta trattata.\n"
+        f"⚠️ OBBLIGATORIO: Ogni ingrediente in lista DEVE avere la sua quantità e unità di misura esatta e realistica (es. 'Vitello (girello) 800 g', 'Tonno sott'olio 160 g', 'Acciughe 4 filetti', 'Aglio 1 spicchio'). È severamente vietato scrivere solo il nome dell'ingrediente senza il suo peso o dosaggio.\n"
         f"8. L'articolo deve contenere necessariamente la preparazione dettagliata della ricetta trattata.\n"
         f"9. CITAZIONI IN LINEA OBBLIGATORIE (REQUISITO CRITICO): Il tuo testo finale deve dimostrare chiaramente l'uso combinato delle fonti. Applica queste citazioni nel testo:\n"
         f"   - Quando inserisci un ingrediente obbligatorio o una tecnica del database locale, usa: [Fonte: Knowledge Graph].\n"
         f"   - Quando descrivi passaggi pratici, tempi o dettagli presi dal web, usa tassativamente l'URL: [Fonte: {url_fonte}].\n"
         f"   Esempio: 'Aggiungete il guanciale [Fonte: Knowledge Graph] e fatelo rosolare a fuoco lento per circa 10 minuti [Fonte: {url_fonte}].'\n"
         f"10. DICITURA FINALE OBBLIGATORIA: Alla fine dell'articolo, lascia una riga vuota e inserisci la fonte globale. "
+        f"11. DIVIETO SUI PREZZI: È SEVERAMENTE VIETATO inserire costi, prezzi o valute (es. €) accanto agli ingredienti nella bozza. Scrivi solo il nome dell'ingrediente e la quantità (es. 'Uova (3 medie)'). Ai prezzi ci penserà il reparto contabilità successivamente."
+        f"12. LUNGHEZZA E STILE EDITORIALE: Mantieni l'articolo entro circa 650-900 parole. "
     )
 
     # Configurazione dinamica della stringa finale in base alla provenienza dei dati
@@ -908,11 +1056,15 @@ def drafter(state: AgentState) -> dict:
 
     # Gestione dell'eventuale ciclo di feedback umano
     if feedback and previous_draft:
-        prompt += f"\n\nEcco la tua BOZZA PRECEDENTE:\n---\n{previous_draft}\n---\n\nCRITICO: L'utente ha rifiutato la bozza precedente con questo feedback: '{feedback}'. DEVI riscrivere pesantemente la bozza. Ricorda SEMPRE di focalizzarti su UNA SOLA RICETTA."
-
-    # 4. Invocazione del Modello
+        prompt += (
+            f"\n\nEcco la tua BOZZA PRECEDENTE:\n---\n{previous_draft}\n---\n\n"
+            f"CRITICO: L'utente ha rifiutato la bozza precedente con questo feedback: '{feedback}'. "
+            f"DEVI riscrivere la bozza seguendo il feedback. "
+            f"Ricorda la Regola 11: durante la riscrittura, ELIMINA qualsiasi prezzo in Euro eventualmente presente. Lascia la lista degli ingredienti pulita."
+        )
     try:
-        response_text = llm.invoke([HumanMessage(content=prompt)]).content
+        drafter_llm = llm.bind(max_tokens=1800)
+        response_text = drafter_llm.invoke([("human", prompt)]).content
     except Exception as e:
         print(
             f"\n[ERRORE FATALE] Impossibile generare la bozza a causa di un errore API: {e}"
@@ -948,22 +1100,76 @@ def drafter(state: AgentState) -> dict:
     }
 
 
-def human_review(state: AgentState) -> dict:
-    """Versione CLI della Human Review ottimizzata per Mac.
-    Mostra la giustificazione editoriale e la pianificazione strategica dell'agente.
+# Assicurati di avere la funzione create_agent importata come hai fatto per il resource_researcher
+
+
+def recipe_enricher(state: AgentState) -> dict:
+    print("-> Esecuzione Recipe Enricher...")
+
+    draft = state.get("draft", "")
+    topic = state.get("current_topic", "")
+
+    if not draft:
+        return {"status": "enrichment_failed"}
+
+    # Creiamo un mini-agente dedicato solo all'arricchimento
+    tools = [cerca_nel_database_ismea]
+    enricher_agent = create_agent(llm, tools)
+
+    prompt = f"""Sei l'Editor Centrale di un blog di cucina. Il tuo compito è arricchire la bozza della ricetta usando ESCLUSIVAMENTE i dati reali estratti dal tool 'cerca_nel_database_ismea'.
+
+    BOZZA ATTUALE:
+    ---
+    {draft}
+    ---
+
+    FLUSSO OPERATIVO TASSATIVO:
+    1. Estrai gli ingredienti principali dalla bozza.
+    2. CHIAMA IL TOOL 'cerca_nel_database_ismea' passandogli la lista.
+    3. Riscrivi e restituisci l'INTERA bozza originale (mantenendo intatte la preparazione e le fonti [Fonte: ...]), applicando queste rigide modifiche:
+
+     1. PREZZI (OBBLIGATORIO): 
+    Modifica la lista degli ingredienti presente nella bozza. Per ogni ingrediente, se il tool ti ha restituito un prezzo, scrivilo accanto tra parentesi tonde. 
+    Esempio: "Burro 100 g (Circa 10.00 €/Kg) [Fonte: Knowledge Graph]"
+
+     2. SEZIONE BIO / INTOLLERANZE (CONDIZIONALE):
+    SE E SOLO SE il tool restituisce delle Alternative BIO che hanno senso (ad esempio, non ha senso sostituire un ingrediente con un altro se non è effettivamente una variante BIO), crea in fondo al testo la sezione "💡 I Consigli dello Chef" e inseriscile. Se la ricetta contiene burro/latte/formaggio, aggiungi di tua iniziativa un consiglio sulle varianti senza lattosio.
+    ATTENZIONE: Se il tool risponde che NON ci sono alternative BIO, NON creare questa sezione, NON nominarle e NON scusarti. Ignora l'argomento.
+
+     3. SEZIONE VINO (CONDIZIONALE):
+    SE E SOLO SE il tool restituisce un suggerimento per il vino, crea la sezione finale "🍷 L'Abbinamento Perfetto" e ricopia il suggerimento. 
+    ATTENZIONE: Se il tool risponde "Nessun abbinamento specifico trovato", è SEVERAMENTE VIETATO creare questa sezione. NON inventare abbinamenti tuoi e NON scrivere "Purtroppo non ho trovato vini". Semplicemente, omettila.
+
+    Restituisci direttamente l'articolo finale formattato.
     """
+
+    print("   [Enricher] Chiamo l'agente per arricchire i dati...")
+    try:
+        response = enricher_agent.invoke({"messages": [("human", prompt)]})
+
+        # Estraiamo la risposta finale dell'LLM
+        final_answer = draft  # Fallback
+        for msg in response.get("messages", []):
+            if getattr(msg, "type", "") == "ai" and msg.content:
+                final_answer = msg.content
+
+    except Exception as e:
+        print(f"   [Errore Enricher] {e}")
+        final_answer = draft  # In caso di errore, proseguiamo con la bozza originale
+
+    return {"draft": final_answer, "status": "enrichment_done"}
+
+
+def human_review(state: AgentState) -> dict:
+    """Versione CLI della Human Review per evitare errori Tkinter su Mac."""
     print("\n" + "=" * 70)
-    print(" 👀 REVISIONE UMANA RICHIESTA (Via Terminale)")
+    print("👀 REVISIONE UMANA RICHIESTA (Via Terminale)")
     print("=" * 70)
 
     draft_content = state.get("draft", "")
     topic = state.get("current_topic", "Senza Titolo")
-    topic_type = state.get("current_topic_type", "N/A")
-    justification = state.get("editorial_justification", "Nessuna giustificazione fornita.")
 
-    # Mostriamo la strategia editoriale pianificata dall'agente (Requirement 1 & 5)
-    print(f"\n 📌 TITOLO/ARGOMENTO: {topic} ({topic_type})")
-    print(f" 🎯 STRATEGIA EDITORIALE: {justification}")
+    print(f"\n📌 TITOLO/ARGOMENTO: {topic}")
     print("-" * 70)
     print(draft_content)
     print("-" * 70)
@@ -973,26 +1179,24 @@ def human_review(state: AgentState) -> dict:
     print("[2] -> Scarta completamente la notizia (Il Planner cercherà un altro topic)")
     print("[Scrivi un testo] -> Chiedi una modifica al Drafter (es. 'Scrivi in modo più formale')")
 
-    scelta = input("\nLa tua scelta: ").strip()
+    scelta = input("\nLa tua scelta: ").strip().lower()
 
     result = {}
 
-    if scelta in ['1', 's', 'si', 'y', 'yes', '1']:
-        print("\n ✅ [Human] Bozza approvata! Vado alla pubblicazione nel K-RAG...")
+    if scelta in ['1', 's', 'si', 'y', 'yes']:
+        print("\n✅ [Human] Bozza approvata! Vado alla pubblicazione nel K-RAG...")
         result["status"] = "approved"
         result["human_feedback"] = ""
-    elif scelta in ['2', 'n', 'no', '2']:
-        print("\n ❌ [Human] Bozza scartata. Riavvio il ciclo di pianificazione...")
-        # Aggiungiamo il topic corrente alla lista dei rifiutati in modo che il planner sappia cosa rimpiazzare
+    elif scelta in ['2', 'n', 'no']:
+        print("\n❌ [Human] Bozza scartata. Riavvio il ciclo di pianificazione...")
         rejected = state.get("rejected_topics", []) + [topic]
         result["status"] = "rejected_topic"
         result["human_feedback"] = "Notizia scartata dall'utente."
         result["rejected_topics"] = rejected
     else:
-        # Se l'utente scrive del testo libero, viene inviato al drafter come feedback di riscrittura
         if not scelta:
             scelta = "Migliora lo stile e riprova."
-        print(f"\n 🔁 [Human] Richiesta modifica: '{scelta}'. Rimando al Drafter...")
+        print(f"\n🔁 [Human] Richiesta modifica: '{scelta}'. Rimando al Drafter...")
         result["status"] = "rewrite"
         result["human_feedback"] = scelta
 
@@ -1136,44 +1340,60 @@ def check_resources_quality(
     return "resource_researcher"
 
 
-def check_approval(
-    state: AgentState,
-) -> Literal["kg_updater", "drafter", "topic_planner"]:
-    if state["status"] == "approved":
+def check_approval(state: AgentState) -> str:
+    status = state.get("status")
+
+    if status == "approved":
         return "kg_updater"
-    elif state["status"] == "rejected_topic":
-        return "topic_planner"
-    else:
+
+    elif status == "rewrite":
         return "drafter"
+
+    else:
+        # rejected_topic
+        return "topic_planner"
 
 
 workflow = StateGraph(AgentState)
-
+# DEFINIZIONE DEI NODI
 workflow.add_node("topic_planner", topic_planner)
 workflow.add_node("resource_researcher", resource_researcher)
 workflow.add_node("quality_fact_checker", quality_fact_checker)
 workflow.add_node("drafter", drafter)
+workflow.add_node("enricher", recipe_enricher)  # <-- Inserito il nuovo nodo
 workflow.add_node("human_review", human_review)
 workflow.add_node("kg_updater", kg_updater)
 
+# COLLEGAMENTI (EDGES)
 workflow.add_edge(START, "topic_planner")
 workflow.add_edge("topic_planner", "resource_researcher")
 workflow.add_edge("resource_researcher", "quality_fact_checker")
+
 workflow.add_conditional_edges(
     "quality_fact_checker",
     check_resources_quality,
     {"drafter": "drafter", "resource_researcher": "resource_researcher"},
 )
-workflow.add_edge("drafter", "human_review")
+
+# --- MODIFICA CRITICA QUI ---
+workflow.add_edge(
+    "drafter", "enricher"
+)  # Il drafter passa la bozza grezza all'enricher
+workflow.add_edge(
+    "enricher", "human_review"
+)  # L'enricher passa l'articolo completo all'umano
+# ----------------------------
+
 workflow.add_conditional_edges(
     "human_review",
     check_approval,
     {
-        "kg_updater": "kg_updater",
-        "drafter": "drafter",
-        "topic_planner": "topic_planner",
+        "kg_updater": "kg_updater",  # Approvato: si aggiorna il DB a grafi e si finisce
+        "drafter": "drafter",  # Rifiutato (modifica testo): torna al drafter -> poi enricher -> poi umano
+        "topic_planner": "topic_planner",  # Rifiutato (cambio ricetta): ricomincia da capo
     },
 )
+
 workflow.add_edge("kg_updater", END)
 
 app = workflow.compile()
@@ -1197,7 +1417,7 @@ initial_state = {
     "kg_context": None,
     "planned_topics": [],
     "current_topic": "",
-    "current_topic_type": "", 
+    "current_topic_type": "",
     "editorial_justification": "",
     "raw_resources": [],
     "verified_resources": [],

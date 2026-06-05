@@ -551,6 +551,98 @@
         "girasole": {
             "prezzo": 793.94,
             "um": "€/T"
+        },
+        "burro": {
+            "prezzo": 11.5,
+            "um": "€/Kg"
+        },
+        "parmigiano reggiano": {
+            "prezzo": 22.0,
+            "um": "€/Kg"
+        },
+        "grana padano": {
+            "prezzo": 18.0,
+            "um": "€/Kg"
+        },
+        "panna fresca": {
+            "prezzo": 6.5,
+            "um": "€/Litro"
+        },
+        "prosciutto crudo": {
+            "prezzo": 28.0,
+            "um": "€/Kg"
+        },
+        "prosciutto cotto": {
+            "prezzo": 18.0,
+            "um": "€/Kg"
+        },
+        "guanciale": {
+            "prezzo": 16.0,
+            "um": "€/Kg"
+        },
+        "pancetta": {
+            "prezzo": 14.0,
+            "um": "€/Kg"
+        },
+        "mortadella": {
+            "prezzo": 13.5,
+            "um": "€/Kg"
+        },
+        "salame": {
+            "prezzo": 20.0,
+            "um": "€/Kg"
+        },
+        "sale fino": {
+            "prezzo": 0.8,
+            "um": "€/Kg"
+        },
+        "sale grosso": {
+            "prezzo": 0.8,
+            "um": "€/Kg"
+        },
+        "pepe nero": {
+            "prezzo": 35.0,
+            "um": "€/Kg"
+        },
+        "noce moscata": {
+            "prezzo": 55.0,
+            "um": "€/Kg"
+        },
+        "salvia": {
+            "prezzo": 15.0,
+            "um": "€/Kg"
+        },
+        "basilico": {
+            "prezzo": 18.0,
+            "um": "€/Kg"
+        },
+        "rosmarino": {
+            "prezzo": 12.0,
+            "um": "€/Kg"
+        },
+        "pinoli": {
+            "prezzo": 75.0,
+            "um": "€/Kg"
+        },
+        "trofie": {
+            "prezzo": 3.8,
+            "um": "€/Kg"
+        },
+        "pasta di semola": {
+            "prezzo": 1.6,
+            "um": "€/Kg"
+        },
+        "farina 00": {
+            "prezzo": 1.3,
+            "um": "€/Kg"
+        },
+        "lievito di birra fresco": {
+            "prezzo": 10.0,
+            "um": "€/Kg"
+        },
+        "zucchero": {
+            "prezzo": 1.4,
+            "um": "€/Kg"
         }
     },
     "ingredienti_bio": {
@@ -753,10 +845,47 @@
         "susine": {
             "prezzo": 1.6,
             "um": "€/Kg"
+        },
+        "burro": {
+            "prezzo": 15.0,
+            "um": "€/Kg"
+        },
+        "parmigiano reggiano": {
+            "prezzo": 28.0,
+            "um": "€/Kg"
+        },
+        "farina 00": {
+            "prezzo": 2.2,
+            "um": "€/Kg"
+        },
+        "zucchero": {
+            "prezzo": 2.8,
+            "um": "€/Kg"
+        },
+        "pasta di semola": {
+            "prezzo": 2.5,
+            "um": "€/Kg"
+        },
+        "pinoli": {
+            "prezzo": 90.0,
+            "um": "€/Kg"
         }
     },
     "vini": {
-        "rosso": {},
+        "rosso": {
+            "vino rosso da cucina": {
+                "prezzo": 2.5,
+                "um": "€/Litro"
+            },
+            "chianti classico": {
+                "prezzo": 9.5,
+                "um": "€/Bottiglia"
+            },
+            "lambrusco": {
+                "prezzo": 5.5,
+                "um": "€/Bottiglia"
+            }
+        },
         "bianco": {
             "vini doc": {
                 "prezzo": 657.0,
@@ -765,6 +894,18 @@
             "vini igt bianchi": {
                 "prezzo": 11.75,
                 "um": "€/Ettogrado"
+            },
+            "vino bianco da cucina": {
+                "prezzo": 2.5,
+                "um": "€/Litro"
+            },
+            "sauvignon blanc": {
+                "prezzo": 8.5,
+                "um": "€/Bottiglia"
+            },
+            "pinot grigio": {
+                "prezzo": 7.0,
+                "um": "€/Bottiglia"
             }
         },
         "bollicine": {
