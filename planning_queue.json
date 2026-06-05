@@ -1,14 +1,14 @@
 [
     {
+        "tipo": "Secondo",
+        "ricetta": "Pollo alla Diavola"
+    },
+    {
         "tipo": "Dolce",
-        "ricetta": "Babà Napoletano"
+        "ricetta": "Zeppole"
     },
     {
         "tipo": "Primo",
-        "ricetta": "Spaghetti alla Carbonara"
-    },
-    {
-        "tipo": "Secondo",
-        "ricetta": "Vitello tonnato"
+        "ricetta": "Tortellini alla Panna"
     }
 ]

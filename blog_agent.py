@@ -400,37 +400,45 @@ def cerca_nel_database_ismea(ingredienti_ricetta: list) -> str:
     }
 
     # 2. Prompt per l'LLM: gli affidiamo Semantica, Costo Reale e Sommelier
-    prompt_ragionamento = f"""Sei un esperto culinario, sommelier professionista e un matematico precisissimo.
-    Analizza questi ingredienti (che includono le quantità richieste per la ricetta):
+    prompt_ragionamento = f"""Sei un autorevole esperto culinario, un sommelier professionista e un matematico finanziario di precisione assoluta.
+    Analizza questa lista di ingredienti estratti da una ricetta, che include le quantità specifiche richieste:
     {ingredienti_ricetta}
 
-    CATALOGO ISMEA (NOME: PREZZO GREZZO BASE):
+    CATALOGO REALE ISMEA (NOME: PREZZO BASE E UNITÀ DI MISURA ALL'INGROSSO):
     - Standard: {catalogo_standard}
     - BIO: {catalogo_bio}
 
-    COMPITO 1 (MAPPATURA): Trova il miglior abbinamento logico tra gli ingredienti richiesti e quelli del Catalogo. 
-    CRITICO: Se un ingrediente NON ha una corrispondenza sensata, NON INSERIRLO nell'array JSON.
+    COMPITO 1 (MAPPATURA SEMANTICA E SINONIMI): 
+    Il catalogo ISMEA usa termini commerciali all'ingrosso. Devi mappare gli ingredienti della ricetta usando i sinonimi logici del catalogo:
+    - "Zucchero" o "Zucchero velo" -> Cerca "Zucchero" o "Saccarosio"
+    - "Farina Manitoba" o "Farina" -> Cerca "Frumento tenero" o "Farina di frumento"
+    - "Burro" -> Cerca "Burro" o "Latte vaccino (freschi)"
+    - "Rum" o alcolici -> Se assenti nel catalogo, non inventare i prezzi, lasciali vuoti.
+    Se trovi un match logico, procedi al calcolo. Se è totalmente assente, non inserirlo nel JSON.
 
-    COMPITO 2 (CALCOLO DEL COSTO EFFETTIVO): 
-    Non limitarti a copiare il prezzo base. Devi calcolare quanto costa la **quantità specifica** usata nella ricetta!
-    Applica tassativamente questi passaggi:
-    1. Estrai la quantità dall'ingrediente (es. "20 g", "350 g").
-    2. Converti le unità per farle combaciare con il prezzo base (Ricorda: 1000 g = 1 Kg).
-    3. Esegui la moltiplicazione. (Esempio: Se servono 20 g di Pecorino e costa 21.00 €/Kg, il calcolo è 21.00 * 0.02 = 0.42 €).
-    4. Scrivi il risultato nel campo "prezzo_finale" in questo formato: "Circa 0.42 € (per 20 g)".
-    5. ECCEZIONI: Se la quantità non è specificata, c'è scritto "q.b.", oppure è un pizzico/spicchio non calcolabile a peso, restituisci semplicemente il prezzo al chilo pulito (es. "11.45 €/Kg").
+    COMPITO 2 (CALCOLO MATEMATICO PROPORZIONALE DELLA PORZIONE):
+    Calcola il costo ESATTO della quantità richiesta nella ricetta basandoti sul prezzo all'ingrosso del catalogo.
+    ⚠️ REGOLE DI CONVERSIONE TASSATIVE PER IL MATEMATICO:
+    - Se l'unità del catalogo è 't' (Tonnellata): dividi il prezzo per 1.000.000 per ottenere il prezzo al grammo, poi moltiplica per i grammi esatti della ricetta. (Es: Frumento 400 €/t -> 400 / 1.000.000 = 0.0004 €/g. Per 300 g di farina: 0.0004 * 300 = 0.12 €).
+    - Se l'unità del catalogo è 'q.le' o '100 kg' (Quintale): dividi il prezzo per 100.000 per ottenere il prezzo al grammo, poi moltiplica per i grammi della ricetta.
+    - Se l'unità del catalogo è '100 unità' o '100 pezzi': dividi il prezzo per 100 per trovare il prezzo del singolo pezzo, poi moltiplica per il numero di pezzi richiesti (Es: Uova ricetta = 3. Catalogo = 14.60 € / 100 pezzi -> 0.146 € a uovo. Per 3 uova = 0.146 * 3 = 0.44 €).
+    - Se la quantità nella ricetta usa frazioni come '½', considerala come metà unità (0.5) o convertila in grammi stimati (es. scorza = 5g).
+    - Se la quantità è "q.b.", restituisci il prezzo convertito al chilogrammo finito (es. "Circa 1.20 €/Kg").
 
-    COMPITO 3 (VINO): Comportati da vero sommelier. Analizzando la lista degli ingredienti, deduci il profilo di sapore del piatto (es. carne rossa, pesce, sapidità, grassezza) e proponi SEMPRE un vino in abbinamento. Specifica il nome del vino (es. Frascati Superiore, Chianti Classico) e spiega brevemente perché si sposa bene. Usa "Nessuno" SOLO E SOLTANTO se è un piatto che non ammette vino (es. latte e cereali).
+    Formatta il campo "prezzo_finale" esattamente così: "Circa X.XX € (per VALORE_QUANTITÀ_RICETTA)" (Es: "Circa 0.12 € (per 300 g)" oppure "Circa 1.32 € (per 3 uova)").
 
-    Rispondi ESCLUSIVAMENTE con un JSON valido, senza markdown (niente ```json), strutturato esattamente così:
+    COMPITO 3 (ABBINAMENTO VINO DA SOMMELIER):
+    Seleziona un vino specifico in abbinamento e spiega la scelta.
+
+    Rispondi ESCLUSIVAMENTE con un JSON valido, senza markdown (NO ```json), strutturato così:
     {{
         "ingredienti_trovati": [
-            {{"richiesto": "nome_originale", "trovato": "nome_nel_catalogo", "prezzo_finale": "costo calcolato e quantità"}}
+            {{"richiesto": "nome_originale", "trovato": "nome_nel_catalogo", "prezzo_finale": "costo calcolato proporzionale"}}
         ],
         "alternative_bio": [
-            {{"richiesto": "nome_originale", "trovato": "nome_nel_catalogo_bio", "prezzo_finale": "costo calcolato e quantità"}}
+            {{"richiesto": "nome_originale", "trovato": "nome_nel_catalogo_bio", "prezzo_finale": "costo bio calcolato proporzionale"}}
         ],
-        "vino": "Nome del vino consigliato e motivazione."
+        "vino": "Nome del vino e motivazione."
     }}
     """
 
@@ -1029,6 +1037,7 @@ def drafter(state: AgentState) -> dict:
         f"5. Se pertinente, CONNETTI il nuovo post a una di queste vecchie informazioni passate.\n"
         f"6. Scrivi in modo diretto come se fossi uno chef (VIETATO usare scuse, premesse o frasi introduttive come 'ecco l'articolo').\n"
         f"7. L'articolo deve contenere necessariamente la lista degli ingredienti della ricetta trattata.\n"
+        f"⚠️ OBBLIGATORIO: Ogni ingrediente in lista DEVE avere la sua quantità e unità di misura esatta e realistica (es. 'Vitello (girello) 800 g', 'Tonno sott'olio 160 g', 'Acciughe 4 filetti', 'Aglio 1 spicchio'). È severamente vietato scrivere solo il nome dell'ingrediente senza il suo peso o dosaggio.\n"
         f"8. L'articolo deve contenere necessariamente la preparazione dettagliata della ricetta trattata.\n"
         f"9. CITAZIONI IN LINEA OBBLIGATORIE (REQUISITO CRITICO): Il tuo testo finale deve dimostrare chiaramente l'uso combinato delle fonti. Applica queste citazioni nel testo:\n"
         f"   - Quando inserisci un ingrediente obbligatorio o una tecnica del database locale, usa: [Fonte: Knowledge Graph].\n"
