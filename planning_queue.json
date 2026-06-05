@@ -1,14 +1,14 @@
 [
     {
-        "tipo": "Secondo",
-        "ricetta": "Saltimbocca alla Romana"
-    },
-    {
         "tipo": "Dolce",
-        "ricetta": "Tiramisù"
+        "ricetta": "Babà Napoletano"
     },
     {
         "tipo": "Primo",
         "ricetta": "Spaghetti alla Carbonara"
+    },
+    {
+        "tipo": "Secondo",
+        "ricetta": "Vitello tonnato"
     }
 ]

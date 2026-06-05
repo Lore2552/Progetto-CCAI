@@ -376,9 +376,12 @@ def kg_rag_tool(topic: str) -> str:
 @tool
 def cerca_nel_database_ismea(ingredienti_ricetta: list) -> str:
     """
-    Cerca i prezzi, le alternative BIO e i vini suggeriti per una specifica lista di ingredienti.
+    Cerca i prezzi, le alternative BIO e suggerisce i vini per una ricetta.
+    Usa un LLM interno per tradurre i dialetti, fare i calcoli matematici e ragionare sugli abbinamenti.
     """
-    print(f"      [ISMEA Tool] Ricerca dati per: {ingredienti_ricetta}...")
+    print(
+        f"      [ISMEA Tool] Avvio LLM per mappare e calcolare: {ingredienti_ricetta}..."
+    )
 
     try:
         with open("database_unico_ismea.json", "r", encoding="utf-8") as f:
@@ -386,98 +389,74 @@ def cerca_nel_database_ismea(ingredienti_ricetta: list) -> str:
     except Exception as e:
         return f"Errore: Impossibile accedere al database ISMEA. Dettagli: {e}"
 
-    risultati = {
-        "prezzi_trovati": [],
-        "alternative_bio_suggerite": [],
-        "suggerimento_vino": "Nessun abbinamento specifico trovato.",
+    # 1. Creiamo dizionari compatti da passare all'LLM contenenti NOME e DATI GREZZI
+    # Esempio risultato: {"uova": "33.79 100 unità", "rum": "441.92 t"}
+    catalogo_standard = {
+        k: f"{v['prezzo']} {v['um']}"
+        for k, v in db.get("ingredienti_standard", {}).items()
+    }
+    catalogo_bio = {
+        k: f"{v['prezzo']} {v['um']}" for k, v in db.get("ingredienti_bio", {}).items()
     }
 
-    # Funzione interna per trasformare i prezzi ingrosso in formati "umani" da supermercato
-    def normalizza_prezzo(prezzo: float, um: str):
-        um_lower = str(um).lower().strip()
-        if um_lower in ["t", "tonnellata", "tonnellate"]:
-            return round(prezzo / 1000, 2), "€/Kg"
-        elif "100" in um_lower and ("unità" in um_lower or "pezzi" in um_lower):
-            return round(prezzo / 100, 2), "€ al pezzo"
-        elif um_lower in ["100 kg", "q.le", "quintale"]:
-            return round(prezzo / 100, 2), "€/Kg"
-        elif "kg" in um_lower:
-            return prezzo, "€/Kg"
-        else:
-            return prezzo, um
+    # 2. Prompt per l'LLM: gli affidiamo Semantica, Costo Reale e Sommelier
+    prompt_ragionamento = f"""Sei un esperto culinario, sommelier professionista e un matematico precisissimo.
+    Analizza questi ingredienti (che includono le quantità richieste per la ricetta):
+    {ingredienti_ricetta}
 
-    for ingrediente in ingredienti_ricetta:
-        ing_lower = str(ingrediente).lower().strip()
+    CATALOGO ISMEA (NOME: PREZZO GREZZO BASE):
+    - Standard: {catalogo_standard}
+    - BIO: {catalogo_bio}
 
-        # Cerca nel listino standard usando boundary \b per evitare che "rum" matchi "frumento"
-        for nome_db, dati in db.get("ingredienti_standard", {}).items():
-            # Controlla se la parola esatta è presente
-            if re.search(rf"\b{re.escape(nome_db)}\b", ing_lower) or re.search(
-                rf"\b{re.escape(ing_lower)}\b", nome_db
-            ):
-                prezzo_norm, um_norm = normalizza_prezzo(dati["prezzo"], dati["um"])
-                risultati["prezzi_trovati"].append(
-                    f"- {ingrediente}: {prezzo_norm} {um_norm}"
-                )
-                break
+    COMPITO 1 (MAPPATURA): Trova il miglior abbinamento logico tra gli ingredienti richiesti e quelli del Catalogo. 
+    CRITICO: Se un ingrediente NON ha una corrispondenza sensata, NON INSERIRLO nell'array JSON.
 
-        # Cerca nel listino BIO
-        for nome_bio, dati_bio in db.get("ingredienti_bio", {}).items():
-            if re.search(rf"\b{re.escape(nome_bio)}\b", ing_lower) or re.search(
-                rf"\b{re.escape(ing_lower)}\b", nome_bio
-            ):
-                prezzo_norm, um_norm = normalizza_prezzo(
-                    dati_bio["prezzo"], dati_bio["um"]
-                )
-                risultati["alternative_bio_suggerite"].append(
-                    f"- Variante Naturale: Sostituisci '{ingrediente}' con '{nome_bio.title()} BIO' (Costo medio: {prezzo_norm} {um_norm})"
-                )
-                break
+    COMPITO 2 (CALCOLO DEL COSTO EFFETTIVO): 
+    Non limitarti a copiare il prezzo base. Devi calcolare quanto costa la **quantità specifica** usata nella ricetta!
+    Applica tassativamente questi passaggi:
+    1. Estrai la quantità dall'ingrediente (es. "20 g", "350 g").
+    2. Converti le unità per farle combaciare con il prezzo base (Ricorda: 1000 g = 1 Kg).
+    3. Esegui la moltiplicazione. (Esempio: Se servono 20 g di Pecorino e costa 21.00 €/Kg, il calcolo è 21.00 * 0.02 = 0.42 €).
+    4. Scrivi il risultato nel campo "prezzo_finale" in questo formato: "Circa 0.42 € (per 20 g)".
+    5. ECCEZIONI: Se la quantità non è specificata, c'è scritto "q.b.", oppure è un pizzico/spicchio non calcolabile a peso, restituisci semplicemente il prezzo al chilo pulito (es. "11.45 €/Kg").
 
-    # Analisi per il Vino
-    testo_ingredienti = " ".join(ingredienti_ricetta).lower()
-    if any(
-        k in testo_ingredienti
-        for k in [
-            "manzo",
-            "maiale",
-            "cinghiale",
-            "agnello",
-            "salsiccia",
-            "vitello",
-            "prosciutto",
-            "salame",
-            "bresaola",
-            "mortadella",
-            "pancetta",
-            "speck",
-            "capocollo",
-            "brasato",
-            "arrosto",
-            "stufato",
-        ]
-    ):
-        vini_rossi = list(db.get("vini", {}).get("rosso", {}).items())
-        if vini_rossi:
-            nome, dati = vini_rossi[0]
-            p, u = normalizza_prezzo(dati["prezzo"], dati["um"])
-            risultati["suggerimento_vino"] = (
-                f"Vino Rosso: {nome.capitalize()} (Circa {p} {u})"
-            )
+    COMPITO 3 (VINO): Comportati da vero sommelier. Analizzando la lista degli ingredienti, deduci il profilo di sapore del piatto (es. carne rossa, pesce, sapidità, grassezza) e proponi SEMPRE un vino in abbinamento. Specifica il nome del vino (es. Frascati Superiore, Chianti Classico) e spiega brevemente perché si sposa bene. Usa "Nessuno" SOLO E SOLTANTO se è un piatto che non ammette vino (es. latte e cereali).
 
-    elif any(
-        k in testo_ingredienti
-        for k in ["pesce", "calamari", "vongole", "salmone", "pollo"]
-    ):
-        vini_bianchi = list(db.get("vini", {}).get("bianco", {}).items())
-        if vini_bianchi:
-            nome, dati = vini_bianchi[0]
-            p, u = normalizza_prezzo(dati["prezzo"], dati["um"])
-            risultati["suggerimento_vino"] = (
-                f"Vino Bianco: {nome.capitalize()} (Circa {p} {u})"
-            )
+    Rispondi ESCLUSIVAMENTE con un JSON valido, senza markdown (niente ```json), strutturato esattamente così:
+    {{
+        "ingredienti_trovati": [
+            {{"richiesto": "nome_originale", "trovato": "nome_nel_catalogo", "prezzo_finale": "costo calcolato e quantità"}}
+        ],
+        "alternative_bio": [
+            {{"richiesto": "nome_originale", "trovato": "nome_nel_catalogo_bio", "prezzo_finale": "costo calcolato e quantità"}}
+        ],
+        "vino": "Nome del vino consigliato e motivazione."
+    }}
+    """
 
-    output = "RISULTATI RICERCA ISMEA:\n"
+    try:
+        risposta_llm = llm.invoke([("human", prompt_ragionamento)]).content
+        risposta_pulita = risposta_llm.replace("```json", "").replace("```", "").strip()
+        ragionamento = json.loads(risposta_pulita)
+    except Exception as e:
+        print(f"      [ISMEA Tool - Errore LLM interno] {e}")
+        return "Errore durante il ragionamento semantico e calcolo dei prezzi."
+
+    # 3. Ricostruzione dell'output fidandosi ciecamente dei calcoli e del JSON dell'LLM
+    risultati = {"prezzi_trovati": [], "alternative_bio_suggerite": []}
+
+    for item in ragionamento.get("ingredienti_trovati", []):
+        risultati["prezzi_trovati"].append(
+            f"- {item['richiesto']} (identificato come '{item['trovato']}'): {item['prezzo_finale']}"
+        )
+
+    for item in ragionamento.get("alternative_bio", []):
+        risultati["alternative_bio_suggerite"].append(
+            f"- Variante Naturale: Sostituisci '{item['richiesto']}' con '{item['trovato'].title()} BIO' (Costo: {item['prezzo_finale']})"
+        )
+
+    # 4. Formattazione finale per l'Enricher
+    output = "RISULTATI RICERCA ISMEA (Semantica e Prezzi calcolati da LLM):\n"
     output += (
         "Prezzi da usare:\n"
         + (
@@ -496,7 +475,7 @@ def cerca_nel_database_ismea(ingredienti_ricetta: list) -> str:
         )
         + "\n\n"
     )
-    output += "Vino:\n" + risultati["suggerimento_vino"]
+    output += "Vino:\n" + ragionamento.get("vino", "Nessun abbinamento.")
 
     return output
 
@@ -772,6 +751,7 @@ def topic_planner(state: AgentState) -> dict:
             f'    {{"tipo": "Primo", "ricetta": "Spaghetti alla Carbonara"}},\n'
             f'    {{"tipo": "Dolce", "ricetta": "Panna Cotta"}}\n'
             f"  ]\n"
+            f"CRITICO: Se il nome della ricetta è molto simile ad un altro presente nel knowledge graph (ad esempio, nel knowledge graph c'è scritto la ricetta classica dei tortellini en brodo, e la ricetta da valutare è tortellini in brodo, o tortellini al brodo) non devi includerla ASSOLUTAMENTE."
             f"}}"
         )
 
@@ -988,6 +968,7 @@ def quality_fact_checker(state: AgentState) -> dict:
             f"Testo della ricetta da validare:\n'{content}'.\n\n"
             f"La ricetta è già inclusa nel knowledge graph? Se si, rispondi 'NO'.\n"
             f"Il procedimento espone la preparazione di questo piatto ed è valido? Rispondi esattamente 'SI' o 'NO'."
+            f"CRITICO: Se il nome della ricetta è molto simile ad un altro presente nel knoledge graph (ad esempio, nel knowledge graph c'è scritto la ricetta classica dei tortellini en brodo, e la ricetta da valutare è tortellini in brodo, o tortellini al brodo) devi rispondere 'SI' perché è una variante molto comune e accettabile."
         )
         try:
             eval_res = llm.invoke([HumanMessage(content=prompt)]).content.upper()
@@ -1188,6 +1169,20 @@ def human_review(state: AgentState) -> dict:
         root.destroy()
 
     def on_reject():
+        queue = load_planning_queue()
+
+        if queue:
+            queue.pop()
+
+        queue.insert(
+            0,
+            {
+                "tipo": state.get("current_topic_type", "Piatto"),
+                "ricetta": state["current_topic"],
+            },
+        )
+        save_planning_queue(queue)
+
         rejected = state.get("rejected_topics", []) + [state["current_topic"]]
         result["status"] = "rejected_topic"
         result["human_feedback"] = "Notizia scartata dall'utente."
