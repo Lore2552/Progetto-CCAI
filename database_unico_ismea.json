@@ -768,81 +768,9 @@
             }
         },
         "bollicine": {
-            "burro": {
-                "prezzo": 4.48,
-                "um": "€/Kg"
-            },
-            "crema di latte": {
-                "prezzo": 2.72,
-                "um": "€/Kg"
-            },
-            "crescenza": {
-                "prezzo": 13.77,
-                "um": "€/Kg"
-            },
-            "fontal estero": {
-                "prezzo": 9.9,
-                "um": "€/Kg"
-            },
-            "fontina": {
-                "prezzo": 17.28,
-                "um": "€/Kg"
-            },
-            "gorgonzola": {
-                "prezzo": 14.69,
-                "um": "€/Kg"
-            },
-            "grana padano": {
-                "prezzo": 18.5,
-                "um": "€/Kg"
-            },
-            "latte di bufala": {
-                "prezzo": 280.8,
-                "um": "€/Hl"
-            },
-            "latte spot": {
-                "prezzo": 60.48,
-                "um": "€/100 kg"
-            },
-            "mascarpone": {
-                "prezzo": 7.79,
-                "um": "€/Kg"
-            },
-            "montasio": {
-                "prezzo": 19.26,
-                "um": "€/Kg"
-            },
-            "mozzarella": {
-                "prezzo": 15.93,
-                "um": "€/Kg"
-            },
-            "parmigiano reggiano": {
-                "prezzo": 29.74,
-                "um": "€/Kg"
-            },
-            "provolone val padana": {
-                "prezzo": 14.56,
-                "um": "€/Kg"
-            },
-            "taleggio": {
-                "prezzo": 12.42,
-                "um": "€/Kg"
-            },
-            "toma piemontese": {
-                "prezzo": 11.34,
-                "um": "€/Kg"
-            },
-            "italico": {
-                "prezzo": 11.3,
-                "um": "€/Kg"
-            },
             "vini doc": {
                 "prezzo": 342.0,
                 "um": "€/Hl"
-            },
-            "vini igt bianchi": {
-                "prezzo": 10.94,
-                "um": "€/Ettogrado"
             },
             "vini bianchi comuni": {
                 "prezzo": 8.48,
