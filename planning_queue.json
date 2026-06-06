@@ -1,14 +1,10 @@
 [
     {
-        "tipo": "Secondo",
-        "ricetta": "Pollo alla Diavola"
-    },
-    {
         "tipo": "Dolce",
-        "ricetta": "Zeppole"
+        "ricetta": "Panforte di Siena"
     },
     {
         "tipo": "Primo",
-        "ricetta": "Tortellini alla Panna"
+        "ricetta": "Gnocchetti Sardi"
     }
 ]
