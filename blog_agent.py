@@ -2,6 +2,7 @@ import os
 import json
 import chromadb
 from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
 from langchain.agents import create_agent
 from dotenv import load_dotenv
 from typing import TypedDict, List, Dict, Any, Literal
@@ -27,7 +28,6 @@ load_dotenv()
 PLANNING_FILE = "planning_queue.json"
 
 llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.1)
-# llm = ChatOllama(model="llama3.1:8b", temperature=0.5)
 
 ddg_search = DuckDuckGoSearchAPIWrapper(max_results=5)
 
@@ -57,7 +57,7 @@ graph_db = Neo4jGraph(
     url=os.environ.get("NEO4J_URI"),
     username=os.environ.get("NEO4J_USERNAME"),
     password=os.environ.get("NEO4J_PASSWORD"),
-    database="970b4e6b",
+    database=os.environ.get("NEO4J_DATABASE"),
 )
 
 
