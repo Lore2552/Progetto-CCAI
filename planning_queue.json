@@ -1,10 +1,14 @@
 [
     {
+        "tipo": "Secondo",
+        "ricetta": "Pollo alla potentina"
+    },
+    {
         "tipo": "Dolce",
-        "ricetta": "Panforte di Siena"
+        "ricetta": "Sfogliatelle"
     },
     {
         "tipo": "Primo",
-        "ricetta": "Gnocchetti Sardi"
+        "ricetta": "Gnocchi alla Sorrentina"
     }
 ]
