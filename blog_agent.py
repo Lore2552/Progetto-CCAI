@@ -2,7 +2,6 @@ import os
 import json
 import chromadb
 from langchain_core.tools import tool
-from langchain_core.runnables import RunnableConfig
 from langchain.agents import create_agent
 from dotenv import load_dotenv
 from typing import TypedDict, List, Dict, Any, Literal
@@ -79,6 +78,7 @@ co = cohere.Client(api_key=cohere_api_key) if cohere_api_key else None
 class AgentState(TypedDict):
     user_request: str
     kg_context: Any
+    kg_rag_result: Dict[str, Any]
     planned_topics: List[str]
     current_topic: str
     current_topic_type: str
@@ -166,15 +166,11 @@ def cohere_reranker(query: str, documents: list, top_n: int = 3) -> list:
         return documents[:top_n]
 
 
-_LAST_KG_RAG_RESULT = {}
-
-
 @tool
 def kg_rag_tool(topic: str) -> str:
     """Usa questo tool per ottenere il contesto completo di una ricetta combinando dati strutturati (Knowledge Graph)
     e testi estesi (Vector Database) con tecniche avanzate di Hybrid Search (Dense + BM25), Fusione RRF e Cohere Reranking.
     """
-    _LAST_KG_RAG_RESULT.clear()  # Svuoto il dizionario delle interazioni precedenti per evitare leak
 
     print(
         f"      [KG-RAG Tool] Avvio recupero ibrido avanzato per la ricetta: '{topic}'..."
@@ -358,19 +354,22 @@ def kg_rag_tool(topic: str) -> str:
     risposta_tool += f"[2] TESTI DETTAGLIATI (COHERE RERANKED MULTILINGUAL):\n"
     risposta_tool += testo_recuperato
 
-    _LAST_KG_RAG_RESULT["risultato"] = {
-        "risposta_finale": risposta_tool,
-        "testo_recuperato": testo_recuperato,
-        "documenti_recuperati": documenti_recuperati,  # Ora contiene correttamente i metadati
-        "metadata_kg": {
-            "topic": topic,
-            "url": recipe_url,
-            "ingredienti": ingredienti_str,
-            "tecniche": tecniche_str,
-        },
+    document_ids = [doc["id"] for doc in documenti_recuperati if doc.get("id")]
+
+    payload_leggero = {
+        "topic": topic,
+        "recipe_url": recipe_url,
+        "ingredienti": ingredienti_str,
+        "tecniche": tecniche_str,
+        "document_ids": document_ids,
+        "messaggio": (
+            "Recupero KG-RAG completato. "
+            "Usa valuta_documento_locale passando target_topic, document_ids, "
+            "recipe_url, ingredienti e tecniche."
+        ),
     }
 
-    return risposta_tool
+    return json.dumps(payload_leggero, ensure_ascii=False)
 
 
 @tool
@@ -489,7 +488,13 @@ def cerca_nel_database_ismea(ingredienti_ricetta: list) -> str:
 
 
 @tool
-def valuta_documento_locale(target_topic: str) -> str:
+def valuta_documento_locale(
+    target_topic: str,
+    document_ids: List[str],
+    recipe_url: str = "Non disponibile",
+    ingredienti: str = "",
+    tecniche: str = "",
+) -> str:
     """Valuta in modo critico se i testi delle ricette recuperate nel database locale sono PERTINENTI rispetto al target_topic richiesto."""
 
     print(
@@ -504,8 +509,52 @@ def valuta_documento_locale(target_topic: str) -> str:
     valutazioni = []
     documenti_validi = []
 
-    risultato_kg_rag = _LAST_KG_RAG_RESULT.get("risultato", {})
-    documenti_recuperati = risultato_kg_rag.get("documenti_recuperati", [])
+    document_ids = document_ids or []
+
+    if not document_ids:
+        return json.dumps(
+            {
+                "target_topic": target_topic,
+                "valutazioni": [],
+                "esito_generale": "NO",
+                "messaggio": "Nessun document_id ricevuto da valutare.",
+            },
+            ensure_ascii=False,
+        )
+
+    try:
+        chroma_result = collection_ricette.get(ids=document_ids)
+
+        docs = chroma_result.get("documents", []) or []
+        ids = chroma_result.get("ids", []) or []
+        metadatas = chroma_result.get("metadatas", []) or []
+
+        documenti_recuperati = []
+
+        for idx, doc_id in enumerate(ids):
+            documenti_recuperati.append(
+                {
+                    "id": doc_id,
+                    "testo": docs[idx] if idx < len(docs) else "",
+                    "indice": idx + 1,
+                    "metadata": (
+                        metadatas[idx]
+                        if idx < len(metadatas) and metadatas[idx]
+                        else {}
+                    ),
+                }
+            )
+
+    except Exception as e:
+        return json.dumps(
+            {
+                "target_topic": target_topic,
+                "valutazioni": [],
+                "esito_generale": "NO",
+                "messaggio": f"Errore nel recupero documenti da ChromaDB: {e}",
+            },
+            ensure_ascii=False,
+        )
 
     if not documenti_recuperati:
         return json.dumps(
@@ -513,9 +562,20 @@ def valuta_documento_locale(target_topic: str) -> str:
                 "target_topic": target_topic,
                 "valutazioni": [],
                 "esito_generale": "NO",
-                "messaggio": "Nessun documento recuperato da valutare.",
-            }
+                "messaggio": "Nessun documento trovato in ChromaDB per gli ID ricevuti.",
+            },
+            ensure_ascii=False,
         )
+
+    risultato_kg_rag = {
+        "metadata_kg": {
+            "topic": target_topic,
+            "url": recipe_url,
+            "ingredienti": ingredienti,
+            "tecniche": tecniche,
+        },
+        "documenti_recuperati": documenti_recuperati,
+    }
 
     # 2. CICLO DI VALUTAZIONE DEI DOCUMENTI
     for doc in documenti_recuperati:
@@ -567,7 +627,6 @@ def valuta_documento_locale(target_topic: str) -> str:
             valutazioni.append(dati_valutazione)
 
     # 3. ELABORAZIONE FINALE ED AGGIORNAMENTO STATO (FUORI DAL CICLO FOR)
-    _LAST_KG_RAG_RESULT["risultato"]["documenti_recuperati"] = documenti_validi
 
     if documenti_validi:
         nuovo_testo = "\n\n--- FRAMMENTO VETTORIALE ---\n".join(
@@ -581,30 +640,37 @@ def valuta_documento_locale(target_topic: str) -> str:
             "Nessun documento locale pertinente o parziale trovato dopo la validazione."
         )
 
-    _LAST_KG_RAG_RESULT["risultato"]["testo_recuperato"] = nuovo_testo
+    risultato_kg_rag["documenti_recuperati"] = documenti_validi
+    risultato_kg_rag["testo_recuperato"] = nuovo_testo
 
-    if "metadata_kg" in _LAST_KG_RAG_RESULT.get("risultato", {}):
-        meta = _LAST_KG_RAG_RESULT["risultato"]["metadata_kg"]
-        risposta_filtrata = f"RISULTATI DEL RECUPERO IBRIDO AVANZATO PER '{meta.get('topic', target_topic)}':\n\n"
-        risposta_filtrata += (
-            "[1] DATI STRUTTURATI (REGOLE TASSATIVE DAL KNOWLEDGE GRAPH):\n"
-        )
-        risposta_filtrata += f"- URL Ricetta: {meta.get('url', 'N/A')}\n"
-        risposta_filtrata += f"- Ingredienti Obbligatori: {meta.get('ingredienti', 'Nessuno specificato')}\n"
-        risposta_filtrata += (
-            f"- Tecniche Richieste: {meta.get('tecniche', 'Nessuna specificata')}\n\n"
-        )
-        risposta_filtrata += (
-            f"[2] TESTI DETTAGLIATI (FILTRATI SOLO PER PERTINENZA):\n{nuovo_testo}"
-        )
+    meta = risultato_kg_rag["metadata_kg"]
 
-        _LAST_KG_RAG_RESULT["risultato"]["risposta_finale"] = risposta_filtrata
+    risposta_filtrata = f"RISULTATI DEL RECUPERO IBRIDO AVANZATO PER '{meta.get('topic', target_topic)}':\n\n"
+    risposta_filtrata += (
+        "[1] DATI STRUTTURATI (REGOLE TASSATIVE DAL KNOWLEDGE GRAPH):\n"
+    )
+    risposta_filtrata += f"- URL Ricetta: {meta.get('url', 'N/A')}\n"
+    risposta_filtrata += (
+        f"- Ingredienti Obbligatori: {meta.get('ingredienti', 'Nessuno specificato')}\n"
+    )
+    risposta_filtrata += (
+        f"- Tecniche Richieste: {meta.get('tecniche', 'Nessuna specificata')}\n\n"
+    )
+    risposta_filtrata += (
+        f"[2] TESTI DETTAGLIATI (FILTRATI SOLO PER PERTINENZA):\n{nuovo_testo}"
+    )
+
+    risultato_kg_rag["risposta_finale"] = risposta_filtrata
 
     return json.dumps(
         {
             "target_topic": target_topic,
             "valutazioni": valutazioni,
-        }
+            "documenti_validi": len(documenti_validi),
+            "esito_generale": "SI" if documenti_validi else "NO",
+            "kg_rag_payload_filtrato": risultato_kg_rag,
+        },
+        ensure_ascii=False,
     )
 
 
@@ -863,13 +929,13 @@ def resource_researcher(state: AgentState) -> dict:
     prompt = f"""Devi raccogliere dati completi su come si prepara questa ricetta: '{topic}'.
     Hai a disposizione 3 tool per la ricerca:
     1. 'kg_rag_tool': Cerca la ricetta nel database locale ibrido. Restituisce le regole fisse del Knowledge Graph (ingredienti e tecniche obbligatorie) e il frammento di testo completo della ricetta.
-    2. 'valuta_documento_locale': Usa questo tool (fornendo in input SOLO il parametro 'target_topic') per far valutare oggettivamente i documenti appena recuperati dal DB locale ed escludere automaticamente quelli irrilevanti.
+    2. 'valuta_documento_locale': Usa questo tool fornendo 'target_topic', 'document_ids', 'recipe_url', 'ingredienti' e 'tecniche' restituiti da 'kg_rag_tool', per far valutare oggettivamente i documenti appena recuperati dal DB locale ed escludere automaticamente quelli irrilevanti.
     3. 'cerca_e_leggi_sul_web': Cerca ed estrae integralmente i passaggi da pagine internet. Utilizzalo se la ricetta locale è assente, parziale o per colmare i dettagli mancanti.
 
     Flusso Operativo Richiesto:
     1. REASONING: Inizia ogni azione con 'Thought: ...'
     2. Usa SEMPRE come prima azione il tool 'kg_rag_tool'.
-    3. Usa SUBITO il tool 'valuta_documento_locale' (chiamalo SOLO con il parametro target_topic, il testo è già memorizzato dal tool precedente). Se la risposta dice che copre interamente la variante, FERMATI ed esponi tu una sintesi che unisce ingredienti e passaggi di preparazione del piatto in un testo descrittivo.
+    3. Usa SUBITO il tool 'valuta_documento_locale' passandogli target_topic, document_ids, recipe_url, ingredienti e tecniche restituiti dal tool 'kg_rag_tool'. Se la risposta dice che copre interamente la variante, FERMATI ed esponi tu una sintesi che unisce ingredienti e passaggi di preparazione del piatto in un testo descrittivo.
     4. Se l'esito della validazione del database locale è 'PARZIALE' perché manca un ingrediente o un dettaglio specifico rispetto al topic, la ricerca sul web deve essere MIRATA a prendere le informazioni mancanti o la ricetta COMPLETA per integrarle.
     5. Se il tool locale non trova nulla o sei insoddisfatto, usa 'cerca_e_leggi_sul_web' per ottenere l'intera ricetta. Questo tool andrà a restituire diverse fonti web, devi prendere la più inerente al nostro topic (anche basandoti sul nome della ricetta e gli ingredienti). 
     6. Se cerca_e_leggi_sul_web restituisce siti web non italiani (ad esempio spagnoli,inglesi,ecc) devi ripetere la ricerca magari cambiando qualche parola chiave per cercare di ottenere risultati più pertinenti alla cucina italiana. Puoi fare fino a 3 tentativi di ricerca web modificando leggermente la query.
@@ -907,6 +973,8 @@ def resource_researcher(state: AgentState) -> dict:
 
         ha_usato_il_web = False
         url_da_tool = []
+        kg_rag_payload = {}
+        kg_rag_payload_filtrato = {}
 
         for msg in response.get("messages", []):
             if hasattr(msg, "tool_calls") and msg.tool_calls:
@@ -915,6 +983,35 @@ def resource_researcher(state: AgentState) -> dict:
                         ha_usato_il_web = True
 
             if getattr(msg, "type", "") == "tool":
+                try:
+                    parsed_tool_content = json.loads(msg.content)
+
+                    if isinstance(parsed_tool_content, dict):
+                        if "document_ids" in parsed_tool_content:
+                            kg_rag_payload = {
+                                "metadata_kg": {
+                                    "topic": parsed_tool_content.get("topic", topic),
+                                    "url": parsed_tool_content.get(
+                                        "recipe_url", "Non disponibile"
+                                    ),
+                                    "ingredienti": parsed_tool_content.get(
+                                        "ingredienti", ""
+                                    ),
+                                    "tecniche": parsed_tool_content.get("tecniche", ""),
+                                },
+                                "document_ids": parsed_tool_content.get(
+                                    "document_ids", []
+                                ),
+                            }
+
+                        if "kg_rag_payload_filtrato" in parsed_tool_content:
+                            kg_rag_payload_filtrato = parsed_tool_content.get(
+                                "kg_rag_payload_filtrato", {}
+                            )
+
+                except Exception:
+                    pass
+
                 for line in str(msg.content).split("\n"):
                     if "URL_FONTE:" in line:
                         url_da_tool.append(line.split("URL_FONTE:")[1].strip())
@@ -941,7 +1038,9 @@ def resource_researcher(state: AgentState) -> dict:
 
         raw = [{"url": url_scelto, "content": final_answer, "title": topic}]
 
-        contesto_rag_effettivo = _LAST_KG_RAG_RESULT.get("risultato", {}).get(
+        kg_rag_effettivo = kg_rag_payload_filtrato or kg_rag_payload
+
+        contesto_rag_effettivo = kg_rag_effettivo.get(
             "risposta_finale",
             "Nessun contesto DB locale o non attivato in modo sufficiente.",
         )
@@ -950,10 +1049,12 @@ def resource_researcher(state: AgentState) -> dict:
         print(f"   [Errore ReAct Agent] {e}")
         raw = []
         contesto_rag_effettivo = None
+        kg_rag_effettivo = {}
 
     return {
         "raw_resources": raw,
         "kg_context": contesto_rag_effettivo,
+        "kg_rag_result": kg_rag_effettivo,
         "reasoning_trace": trace,
         "status": "research_done",
     }
@@ -1515,6 +1616,7 @@ print("=== INIZIO PROCESSO LANGGRAPH ===")
 initial_state = {
     "user_request": "Scrivi un blog post con la preparazione completa e dettagliata di una famosa ricetta della cucina tradizionale italiana. Voglio imparare ricette autentiche e classiche. Includi solo UNA ricetta per post.",
     "kg_context": None,
+    "kg_rag_result": {},
     "planned_topics": [],
     "current_topic": "",
     "current_topic_type": "",
