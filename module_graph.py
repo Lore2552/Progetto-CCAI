@@ -9,7 +9,7 @@ from langgraph.graph import StateGraph, START, END
 from langchain_core.messages import HumanMessage
 from langchain.agents import create_agent
 
-from module_knowledge_graph import graph_db, load_planning_queue, save_planning_queue
+from module_queue_manager import graph_db, load_planning_queue, save_planning_queue
 from module_tools import (
     llm,
     kg_rag_tool,

@@ -2,19 +2,10 @@ import json
 import os
 from typing import Any, Dict, List
 from dotenv import load_dotenv
-from langchain_neo4j import Neo4jGraph
 
 load_dotenv()
 
 PLANNING_FILE = "planning_queue.json"
-KG_FILE = "knowledge_graph.graphml"
-
-graph_db = Neo4jGraph(
-    url=os.environ.get("NEO4J_URI"),
-    username=os.environ.get("NEO4J_USERNAME"),
-    password=os.environ.get("NEO4J_PASSWORD"),
-    database=os.environ.get("NEO4J_DATABASE"),
-)
 
 
 def load_planning_queue() -> List[Dict[str, str]]:
