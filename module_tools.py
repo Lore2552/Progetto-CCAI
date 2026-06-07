@@ -8,13 +8,23 @@ from langchain_groq import ChatGroq
 from langchain_community.utilities import DuckDuckGoSearchAPIWrapper
 import trafilatura
 from rank_bm25 import BM25Okapi
+from langchain_neo4j import Neo4jGraph
 
-from module_knowledge_graph import graph_db
+from module_queue_manager import graph_db
 from module_rag import collection_ricette, collection_posts, rrf_fusion, cohere_reranker
+
+KG_FILE = "knowledge_graph.graphml"
 
 load_dotenv()
 llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.1)
 ddg_search = DuckDuckGoSearchAPIWrapper(max_results=5)
+
+graph_db = Neo4jGraph(
+    url=os.environ.get("NEO4J_URI"),
+    username=os.environ.get("NEO4J_USERNAME"),
+    password=os.environ.get("NEO4J_PASSWORD"),
+    database=os.environ.get("NEO4J_DATABASE"),
+)
 
 
 @tool
