@@ -9,9 +9,10 @@ from langgraph.graph import StateGraph, START, END
 from langchain_core.messages import HumanMessage
 from langchain.agents import create_agent
 
-from module_queue_manager import graph_db, load_planning_queue, save_planning_queue
+from module_queue_manager import load_planning_queue, save_planning_queue
 from module_tools import (
     llm,
+    graph_db,
     kg_rag_tool,
     valuta_documento_locale,
     cerca_e_leggi_sul_web,
@@ -489,7 +490,7 @@ def recipe_enricher(state: AgentState) -> dict:
     Esempio: "Burro 100 g (Circa 10.00 €/Kg) [Fonte: Knowledge Graph]"
 
      2. SEZIONE BIO / INTOLLERANZE (CONDIZIONALE):
-    SE E SOLO SE il tool restituisce delle Alternative BIO che hanno senso (ad esempio, non ha senso sostituire un ingrediente con un altro se non è effettivamente una variante BIO), crea in fondo al testo la sezione "💡 I Consigli dello Chef" e inseriscile. Se la ricetta contiene burro/latte/formaggio, aggiungi di tua iniziativa un consiglio sulle varianti senza lattosio.
+    SE E SOLO SE il tool restituisce delle Alternative BIO che hanno senso (ad esempio, non ha senso sostituire un ingrediente con un altro se non è effettivamente una variante BIO o ad esempio consigliare il Sale BIO non ha senso), crea in fondo al testo la sezione "💡 I Consigli dello Chef" e inseriscile. Se la ricetta contiene burro/latte/formaggio, aggiungi di tua iniziativa un consiglio sulle varianti senza lattosio.
     ATTENZIONE: Se il tool risponde che NON ci sono alternative BIO, NON creare questa sezione, NON nominarle e NON scusarti. Ignora l'argomento.
 
      3. SEZIONE VINO (CONDIZIONALE):
