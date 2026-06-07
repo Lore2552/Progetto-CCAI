@@ -1,6 +1,10 @@
 [
     {
-        "tipo": "Primo",
-        "ricetta": "Gnocchi alla Sorrentina"
+        "tipo": "Secondo",
+        "ricetta": "Vitello alla Pizzaiola"
+    },
+    {
+        "tipo": "Dolce",
+        "ricetta": "Babà al Limone"
     }
 ]
