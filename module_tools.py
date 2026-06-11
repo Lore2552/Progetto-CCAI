@@ -471,7 +471,7 @@ def cerca_e_leggi_sul_web(query: str) -> str:
         current_query = (
             query
             if attempt == 0
-            else f"{query} ricetta procedimenti dosi -video -wikipedia (attempt {attempt+1})"
+            else f"{query} ricetta procedimenti dosi ingredienti (attempt {attempt+1})"
         )
         try:
             results = ddg_search.results(current_query, max_results=5)
