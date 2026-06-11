@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.29 (MiKTeX 26.5) (preloaded format=pdflatex 2026.6.11)  11 JUN 2026 11:52
+This is pdfTeX, Version 3.141592653-2.6-1.40.29 (MiKTeX 26.5) (preloaded format=pdflatex 2026.6.11)  11 JUN 2026 17:20
 entering extended mode
  restricted \write18 enabled.
  file:line:error style messages enabled.
@@ -256,43 +256,100 @@ Overfull \hbox (30.13759pt too wide) in paragraph at lines 32--33
 [1
 
 {C:/Users/xolor/AppData/Local/MiKTeX/fonts/map/pdftex/pdftex.map}]
-<images/graph.png, id=31, 230.8625pt x 832.10875pt>
+<images/graph.png, id=83, 230.8625pt x 832.10875pt>
 File: images/graph.png Graphic file (type png)
 <use images/graph.png>
 Package pdftex.def Info: images/graph.png  used on input line 47.
 (pdftex.def)             Requested size: 91.04742pt x 328.16513pt.
 LaTeX Font Info:    Font shape `OT1/cmtt/bx/n' in size <10.95> not available
 (Font)              Font shape `OT1/cmtt/m/n' tried instead on input line 59.
-
-Overfull \hbox (26.71402pt too wide) in paragraph at lines 60--61
-[]\OT1/cmtt/m/n/10.95 aggiorna[]knowledge[]graph[]db\OT1/cmr/m/n/10.95 : As-si-cura l'aggiornamento in-cre-men-tale della base di conoscenza
- []
-
-[2
+ [2
 pdfTeX warning (ext4): destination with the same identifier (name{figure.1}) has been already used, duplicate ignored
 <argument> ...shipout:D \box_use:N \l_shipout_box 
                                                   \__shipout_drop_firstpage_...
 l.61     \item \textbf
-                      {\texttt{cerca\_nel\_database\_ismea}}: Strumento cust... <./images/graph.png (PNG copy)>] [3] (report.aux)
+                      {\texttt{cerca\_e\_leggi\_sul\_web} (Web Tool)}: Conse... <./images/graph.png (PNG copy)>]
+Overfull \hbox (26.71402pt too wide) in paragraph at lines 63--64
+[]\OT1/cmtt/m/n/10.95 aggiorna[]knowledge[]graph[]db\OT1/cmr/m/n/10.95 : As-si-cura l'aggiornamento in-cre-men-tale della base di conoscenza
+ []
+
+LaTeX Font Info:    Font shape `OT1/cmtt/bx/n' in size <12> not available
+(Font)              Font shape `OT1/cmtt/m/n' tried instead on input line 75.
+[3]
+Overfull \hbox (2.48735pt too wide) in paragraph at lines 89--90
+[]\OT1/cmr/m/it/10.95 Ricerca Lessi-cale (Sparse/Keyword Re-trieval): \OT1/cmr/m/n/10.95 In par-al-lelo, viene ap-pli-cato l'algoritmo
+ []
+
+
+Overfull \hbox (4.30978pt too wide) in paragraph at lines 114--115
+\OT1/cmr/m/n/10.95 Questo stru-mento en-tra in gioco come mec-ca-n-ismo di \OT1/cmr/m/it/10.95 fall-back \OT1/cmr/m/n/10.95 e in-te-grazione in-tel-li-gente. Richiam-
+ []
+
+[4]
+Overfull \hbox (20.86562pt too wide) in paragraph at lines 116--117
+[]\OT1/cmr/m/n/10.95 Per garan-tire un'elevata qualit^^Ra e af-fid-abilit^^Ra delle in-for-mazioni rac-colte, scon-giu-rando l'estrazione
+ []
+
+
+Overfull \hbox (81.15907pt too wide) in paragraph at lines 128--129
+\OT1/cmr/m/n/10.95 Successivamente all'esecuzione del \OT1/cmtt/m/n/10.95 resource[]researcher\OT1/cmr/m/n/10.95 , il flusso del grafo passa al nodo \OT1/cmtt/m/n/10.95 quality[]fact[]checker\OT1/cmr/m/n/10.95 .
+ []
+
+[5]
+Overfull \hbox (2.7301pt too wide) in paragraph at lines 160--161
+\OT1/cmr/m/n/10.95 deve es-plici-ta-mente in-clud-ere citazioni nel testo per di-mostrare l'utilizzo delle fonti. Quando
+ []
+
+
+Overfull \hbox (7.51392pt too wide) in paragraph at lines 160--161
+\OT1/cmr/m/n/10.95 uti-lizza dati vin-colanti del database lo-cale, deve in-serire il tag \OT1/cmtt/m/n/10.95 [Fonte: Knowledge Graph]\OT1/cmr/m/n/10.95 ;
+ []
+
+[6]
+Overfull \hbox (17.7661pt too wide) in paragraph at lines 165--166
+\OT1/cmr/m/n/10.95 sioni re-go-lari e ma-nipo-lazione di stringhe, sep-a-rando il titolo gen-er-ato dal corpo ef-fet-tivo dell'articolo.
+ []
+
+[7]
+Overfull \hbox (2.7853pt too wide) in paragraph at lines 215--215
+[]\OT1/cmr/bx/n/14.4 Il Nodo KG Up-dater e il con-sol-i-da-mento del Knowl-edge Graph 
+ []
+
+
+Overfull \hbox (6.36021pt too wide) in paragraph at lines 217--218
+\OT1/cmr/m/n/10.95 (\OT1/cmtt/m/n/10.95 status = "approved"\OT1/cmr/m/n/10.95 ), il flusso dell'agente im-bocca il suo ul-timo pas-sag-gio: il nodo \OT1/cmtt/m/n/10.95 kg[]updater\OT1/cmr/m/n/10.95 .
+ []
+
+[8]
+Overfull \hbox (1.33794pt too wide) in paragraph at lines 228--229
+\OT1/cmr/m/n/10.95 (es. \OT1/cmtt/m/n/10.95 USA[]INGREDIENTE\OT1/cmr/m/n/10.95 , \OT1/cmtt/m/n/10.95 USA[]TECNICA\OT1/cmr/m/n/10.95 , \OT1/cmtt/m/n/10.95 TIPO[]DI[]PIATTO\OT1/cmr/m/n/10.95 ), avendo sem-pre il nome della ricetta
+ []
+
+
+Overfull \hbox (8.734pt too wide) in paragraph at lines 234--235
+[]\OT1/cmr/m/n/10.95 Registra le fonti web uti-liz-zate as-so-cian-dole al nodo del post tramite l'arco \OT1/cmtt/m/n/10.95 USES[]SOURCE\OT1/cmr/m/n/10.95 ,
+ []
+
+[9] (report.aux)
  ***********
 LaTeX2e <2026-06-01>
 L3 programming layer <2026-05-26>
  ***********
 Package rerunfilecheck Info: File `report.out' has not changed.
-(rerunfilecheck)             Checksum: D509A1167A9002BD2A2A824D4FFBDF61;742.
+(rerunfilecheck)             Checksum: A2E5027EA376BF828DE807CE2BC2CF8B;4624.
  ) 
 Here is how much of TeX's memory you used:
- 9000 strings out of 467509
- 142448 string characters out of 5408780
- 574758 words of memory out of 5000000
- 38158 multiletter control sequences out of 15000+600000
- 630693 words of font info for 50 fonts, out of 8000000 for 9000
+ 9055 strings out of 467509
+ 143041 string characters out of 5408780
+ 574776 words of memory out of 5000000
+ 38181 multiletter control sequences out of 15000+600000
+ 630862 words of font info for 51 fonts, out of 8000000 for 9000
  1141 hyphenation exceptions out of 8191
- 74i,6n,79p,669b,513s stack positions out of 10000i,1000n,20000p,200000b,200000s
- <C:\Users\xolor\AppData\Local\MiKTeX\fonts/pk/ljfour/jknappen/ec/dpi600\tcrm1095.pk><C:/Users/xolor/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmbx10.pfb><C:/Users/xolor/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmbx12.pfb><C:/Users/xolor/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmr10.pfb><C:/Users/xolor/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmr12.pfb><C:/Users/xolor/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmr17.pfb><C:/Users/xolor/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmti10.pfb><C:/Users/xolor/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmtt10.pfb>
-Output written on report.pdf (3 pages, 141001 bytes).
+ 74i,6n,79p,763b,618s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ <C:\Users\xolor\AppData\Local\MiKTeX\fonts/pk/ljfour/jknappen/ec/dpi600\tcrm1095.pk><C:/Users/xolor/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmbx10.pfb><C:/Users/xolor/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmbx12.pfb><C:/Users/xolor/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmr10.pfb><C:/Users/xolor/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmr12.pfb><C:/Users/xolor/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmr17.pfb><C:/Users/xolor/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmti10.pfb><C:/Users/xolor/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmtt10.pfb><C:/Users/xolor/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmtt12.pfb>
+Output written on report.pdf (9 pages, 212773 bytes).
 PDF statistics:
- 81 PDF objects out of 1000 (max. 8388607)
- 9 named destinations out of 1000 (max. 500000)
- 38 words of extra memory for PDF output out of 10000 (max. 10000000)
+ 184 PDF objects out of 1000 (max. 8388607)
+ 40 named destinations out of 1000 (max. 500000)
+ 142 words of extra memory for PDF output out of 10000 (max. 10000000)
 
