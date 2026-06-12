@@ -1,10 +1,14 @@
 [
     {
-        "tipo": "Dolce",
-        "ricetta": "Babà al Limone"
+        "tipo": "Secondo",
+        "ricetta": "Pollo alla Marsala"
     },
     {
         "tipo": "Primo",
-        "ricetta": "Cannelloni alla Napoletana"
+        "ricetta": "Tortelli di Zucca"
+    },
+    {
+        "tipo": "Dolce",
+        "ricetta": "Panettone di Milano"
     }
 ]
