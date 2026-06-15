@@ -1,0 +1,13 @@
+{
+  "baseline_name": "Baseline-Qwen-3B-Locale",
+  "model_id": "Qwen/Qwen2.5-3B-Instruct",
+  "metrics": {
+    "ner_precision": 0.23,
+    "ner_recall": 0.293,
+    "ner_f1": 0.254,
+    "strict_triplet_precision": 0.066,
+    "strict_triplet_recall": 0.087,
+    "strict_triplet_f1": 0.073,
+    "perplexity": null
+  }
+}
