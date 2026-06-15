@@ -7,7 +7,6 @@
     "ner_f1": 0.254,
     "strict_triplet_precision": 0.066,
     "strict_triplet_recall": 0.087,
-    "strict_triplet_f1": 0.073,
-    "perplexity": null
+    "strict_triplet_f1": 0.073
   }
 }
