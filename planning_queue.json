@@ -1,14 +1,6 @@
 [
     {
-        "tipo": "Primo",
-        "ricetta": "Tortelli di Zucca"
-    },
-    {
         "tipo": "Dolce",
-        "ricetta": "Panettone di Milano"
-    },
-    {
-        "tipo": "Secondo",
-        "ricetta": "Cinghiale alla Cacciatora"
+        "ricetta": "Cantucci con Vin Santo"
     }
 ]

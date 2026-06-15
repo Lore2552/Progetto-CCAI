@@ -1,4 +1,4 @@
-env
+.env
 /chroma_db
 /chroma_db_old
 chroma_db.zip

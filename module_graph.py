@@ -354,6 +354,7 @@ def quality_fact_checker(state: AgentState) -> dict:
         )
         try:
             eval_res = llm.invoke([HumanMessage(content=prompt)]).content.upper()
+            print(f"EVAL_RES: {eval_res}")
             if "SI" in eval_res or "SÌ" in eval_res:
                 valid_links.append(res)
                 print("   [LLM Evaluator] Output di ricerca approvato.")
