@@ -1,0 +1,13 @@
+{
+  "baseline_name": "Baseline-8B",
+  "model_id": "llama-3.1-8b-instant",
+  "metrics": {
+    "ner_precision": 0.072,
+    "ner_recall": 0.101,
+    "ner_f1": 0.083,
+    "strict_triplet_precision": 0.0,
+    "strict_triplet_recall": 0.0,
+    "strict_triplet_f1": 0.0,
+    "perplexity": 6.425
+  }
+}
